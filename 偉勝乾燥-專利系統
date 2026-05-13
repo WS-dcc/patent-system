@@ -22,7 +22,7 @@
   <script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
   <script src="https://unpkg.com/recharts@2.1.12/umd/Recharts.js"></script>
 
-  <!-- 引入 SheetJS (用於完美解析與匯出 Excel xlsx 檔案) -->
+  <!-- 引入 SheetJS -->
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 
   <style>
@@ -53,7 +53,6 @@
       .resizable-cell { resize: none; border: 1px solid #e2e8f0; white-space: normal !important; }
     }
     
-    /* Toast 動畫 */
     @keyframes slideInUp {
       from { transform: translateY(100%); opacity: 0; }
       to { transform: translateY(0); opacity: 1; }
@@ -120,10 +119,14 @@
       "已送至中國區代理人申辦", "已取得(台灣)專利", "已取得(中國)專利"
     ];
 
-    const DEFAULT_COLORS = { dept: '#2563eb', status: '#059669', agency: '#4f46e5', acquiredTotal: '#3b82f6', acquiredInvention: '#e11d48', acquiredUtility: '#d97706' };
-    const DEFAULT_CHART_TYPES = { dept: 'bar', status: 'bar', agency: 'pie', acquired: 'bar' };
-    const DEFAULT_VISIBLE_BLOCKS = ['dept', 'status', 'agency', 'acquired'];
-    const DEFAULT_ORDER = ['dept', 'status', 'agency', 'acquired'];
+    const DEFAULT_COLORS = { 
+        dept: '#2563eb', status: '#059669', agency: '#4f46e5', 
+        regionType: '#8b5cf6', indicator: '#ea580c',
+        acquiredTotal: '#3b82f6', acquiredInvention: '#e11d48', acquiredUtility: '#d97706' 
+    };
+    const DEFAULT_CHART_TYPES = { dept: 'bar', status: 'bar', agency: 'pie', regionType: 'bar', indicator: 'donut', acquired: 'bar' };
+    const DEFAULT_VISIBLE_BLOCKS = ['dept', 'status', 'agency', 'regionType', 'indicator', 'acquired'];
+    const DEFAULT_ORDER = ['dept', 'status', 'agency', 'regionType', 'indicator', 'acquired'];
     const DEFAULT_AGENCIES = ["權益國際專利事務所", "戰國策專利事務所", "仰正國際專利事務所", "仰正", "亞信國際", "友茂"];
     const DEFAULT_REGIONS = ["台灣", "中國", "美國", "泰國"];
     const DISTINCT_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#6366f1', '#84cc16'];
@@ -152,11 +155,12 @@
     const CustomTooltip = ({ active, payload, label }) => {
       if (active && payload && payload.length) {
         return (
-          <div className="bg-white p-3 border border-slate-200 shadow-md rounded-lg">
-            <p className="font-bold text-slate-800 mb-1">{label}</p>
+          <div className="bg-white p-3 border border-slate-200 shadow-xl rounded-xl z-[100] relative min-w-[120px]">
+            <p className="font-bold text-slate-800 mb-1 border-b border-slate-100 pb-1">{label || payload[0].name}</p>
             {payload.map((entry, index) => (
-              <p key={`item-${index}`} style={{ color: entry.color || entry.fill }} className="text-sm font-bold">
-                {entry.name}: {entry.value}
+              <p key={`item-${index}`} style={{ color: entry.color || entry.fill }} className="text-sm font-bold flex justify-between gap-4">
+                <span>{entry.name === label || !entry.name ? '件數' : entry.name}:</span>
+                <span>{entry.value}</span>
               </p>
             ))}
           </div>
@@ -166,7 +170,7 @@
     };
 
     // ==========================================
-    // 輔助組件 (全新動態視覺化引擎)
+    // 輔助組件 (全新動態視覺化引擎 + 總數顯示)
     // ==========================================
     const SingleDatasetChart = ({ data, title, iconName, blockId, handleDragStart, handleDrop, handleDragOver, sortOrder, chartType, baseColor }) => {
         let chartData = Object.entries(data).map(([name, value], index) => ({
@@ -185,6 +189,8 @@
             chartData.sort((a, b) => b.value - a.value);
         }
 
+        const total = chartData.reduce((sum, item) => sum + item.value, 0);
+
         let chartElement;
         switch(chartType) {
             case 'pie':
@@ -193,7 +199,7 @@
                     <RechartsPieChart margin={{ top: 10, right: 10, left: 10, bottom: 10 }}>
                         <Tooltip content={<CustomTooltip />} />
                         <Legend wrapperStyle={{ fontSize: '12px' }} />
-                        <Pie data={chartData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} innerRadius={chartType==='donut'?50:0} label={({ value }) => `${value}`} labelLine={true}>
+                        <Pie data={chartData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={90} innerRadius={chartType==='donut'?55:0} label={({ value }) => `${value}`} labelLine={true}>
                             {chartData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.fill} />)}
                         </Pie>
                     </RechartsPieChart>
@@ -201,33 +207,33 @@
                 break;
             case 'line':
                 chartElement = (
-                    <LineChart data={chartData} margin={{ top: 25, right: 10, left: -20, bottom: 40 }}>
+                    <LineChart data={chartData} margin={{ top: 35, right: 20, left: -20, bottom: 40 }}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
                         <XAxis dataKey="name" tick={{fontSize: 11, fill: '#64748b'}} angle={-25} textAnchor="end" tickLine={false} axisLine={{stroke: '#cbd5e1'}} height={50} />
                         <YAxis tick={{fontSize: 12, fill: '#475569', fontWeight: 600}} tickLine={false} axisLine={{stroke: '#cbd5e1'}} allowDecimals={false} />
                         <Tooltip content={<CustomTooltip />} />
                         <Line type="monotone" dataKey="value" stroke={baseColor} strokeWidth={3} dot={{r:4, fill: baseColor}} activeDot={{r: 6}} >
-                             <LabelList dataKey="value" position="top" fill="#64748b" fontSize={12} fontWeight="bold" />
+                             <LabelList dataKey="value" position="top" fill="#64748b" fontSize={12} fontWeight="bold" offset={10} />
                         </Line>
                     </LineChart>
                 );
                 break;
             case 'area':
                 chartElement = (
-                    <AreaChart data={chartData} margin={{ top: 25, right: 10, left: -20, bottom: 40 }}>
+                    <AreaChart data={chartData} margin={{ top: 35, right: 20, left: -20, bottom: 40 }}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
                         <XAxis dataKey="name" tick={{fontSize: 11, fill: '#64748b'}} angle={-25} textAnchor="end" tickLine={false} axisLine={{stroke: '#cbd5e1'}} height={50} />
                         <YAxis tick={{fontSize: 12, fill: '#475569', fontWeight: 600}} tickLine={false} axisLine={{stroke: '#cbd5e1'}} allowDecimals={false} />
                         <Tooltip content={<CustomTooltip />} />
                         <Area type="monotone" dataKey="value" stroke={baseColor} fill={baseColor} fillOpacity={0.3} >
-                             <LabelList dataKey="value" position="top" fill="#64748b" fontSize={12} fontWeight="bold" />
+                             <LabelList dataKey="value" position="top" fill="#64748b" fontSize={12} fontWeight="bold" offset={10} />
                         </Area>
                     </AreaChart>
                 );
                 break;
             case 'horizontalBar':
                 chartElement = (
-                    <BarChart data={chartData} layout="vertical" margin={{ top: 5, right: 30, left: 0, bottom: 5 }}>
+                    <BarChart data={chartData} layout="vertical" margin={{ top: 5, right: 40, left: 0, bottom: 5 }}>
                         <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={true} stroke="#e2e8f0" />
                         <XAxis type="number" tick={{fontSize: 12, fill: '#64748b'}} tickLine={false} axisLine={{stroke: '#cbd5e1'}} allowDecimals={true} />
                         <YAxis dataKey="name" type="category" width={120} tick={{fontSize: 12, fill: '#475569', fontWeight: 600}} tickLine={false} axisLine={{stroke: '#cbd5e1'}} />
@@ -242,29 +248,32 @@
             case 'bar':
             default:
                 chartElement = (
-                    <BarChart data={chartData} margin={{ top: 25, right: 10, left: -20, bottom: 40 }}>
+                    <BarChart data={chartData} margin={{ top: 35, right: 20, left: -20, bottom: 40 }}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
                         <XAxis dataKey="name" tick={{fontSize: 11, fill: '#64748b'}} angle={-25} textAnchor="end" tickLine={false} axisLine={{stroke: '#cbd5e1'}} height={50} />
                         <YAxis tick={{fontSize: 12, fill: '#475569', fontWeight: 600}} tickLine={false} axisLine={{stroke: '#cbd5e1'}} allowDecimals={false} />
                         <Tooltip content={<CustomTooltip />} />
                         <Bar dataKey="value" radius={[4, 4, 0, 0]} barSize={35}>
                             {chartData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.fill} />)}
-                            <LabelList dataKey="value" position="top" fill="#64748b" fontSize={12} fontWeight="bold" />
+                            <LabelList dataKey="value" position="top" fill="#64748b" fontSize={12} fontWeight="bold" offset={10} />
                         </Bar>
                     </BarChart>
                 );
         }
 
         return (
-            <div className="bg-white/95 backdrop-blur p-4 rounded-xl shadow-sm border border-slate-200 h-[380px] relative group"
+            <div className="bg-white/95 backdrop-blur p-4 rounded-xl shadow-sm border border-slate-200 h-[380px] relative group flex flex-col"
                 draggable={true} onDragStart={(e) => handleDragStart(e, blockId)} onDragOver={handleDragOver} onDrop={(e) => handleDrop(e, blockId)}>
-                <div className="flex items-center gap-2 mb-4 cursor-grab active:cursor-grabbing">
+                <div className="flex items-center gap-2 mb-2 cursor-grab active:cursor-grabbing shrink-0">
                     <Icon name="GripVertical" className="w-5 h-5 text-slate-300 group-hover:text-slate-500 transition-colors" />
                     <Icon name={iconName} className="w-5 h-5 text-slate-600" />
-                    <h3 className="font-bold text-slate-800 select-none">{title}</h3>
+                    <h3 className="font-bold text-slate-800 select-none flex-1 flex items-center justify-between">
+                        {title}
+                        {total > 0 && <span className="text-blue-700 bg-blue-50 px-2 py-0.5 rounded text-xs">總計: {Number(total.toFixed(2))} 件</span>}
+                    </h3>
                 </div>
-                {chartData.length === 0 ? <p className="text-slate-400 text-sm text-center py-4 select-none">暫無數據</p> : (
-                    <ResponsiveContainer width="100%" height="80%">
+                {chartData.length === 0 ? <p className="text-slate-400 text-sm text-center py-4 select-none flex-1">暫無數據</p> : (
+                    <ResponsiveContainer width="100%" height="100%" className="flex-1">
                         {chartElement}
                     </ResponsiveContainer>
                 )}
@@ -274,30 +283,41 @@
 
     const StatsTable = ({ data, headCol1, headCol2 }) => {
       const entries = Object.entries(data).sort((a, b) => b[1] - a[1]);
+      const total = entries.reduce((sum, [_, val]) => sum + val, 0);
+
       return (
-        <div className="bg-white/95 backdrop-blur rounded-xl shadow-sm border border-slate-200 overflow-hidden h-fit">
-          <table className="min-w-full divide-y divide-slate-200">
-            <thead className="bg-slate-100">
-              <tr>
-                <th className="px-4 py-3 text-left text-xs font-bold text-slate-600">{headCol1}</th>
-                <th className="px-4 py-3 text-right text-xs font-bold text-slate-600">{headCol2}</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {entries.length === 0 ? <tr><td colSpan="2" className="px-4 py-4 text-center text-sm text-slate-400">尚無資料</td></tr> : null}
-              {entries.map(([label, val]) => (
-                <tr key={label} className="hover:bg-slate-50 transition-colors">
-                  <td className="px-4 py-2 text-sm text-slate-700 font-medium">{label}</td>
-                  <td className="px-4 py-2 text-sm text-slate-700 text-right font-bold">{Number(val.toFixed(2))}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="bg-white/95 backdrop-blur rounded-xl shadow-sm border border-slate-200 overflow-hidden h-fit flex flex-col max-h-[380px]">
+          <div className="overflow-y-auto flex-1">
+              <table className="min-w-full divide-y divide-slate-200 relative">
+                <thead className="bg-slate-100 sticky top-0 z-10">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-xs font-bold text-slate-600">{headCol1}</th>
+                    <th className="px-4 py-3 text-right text-xs font-bold text-slate-600">{headCol2}</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {entries.length === 0 ? <tr><td colSpan="2" className="px-4 py-4 text-center text-sm text-slate-400">尚無資料</td></tr> : null}
+                  {entries.map(([label, val]) => (
+                    <tr key={label} className="hover:bg-slate-50 transition-colors">
+                      <td className="px-4 py-2 text-sm text-slate-700 font-medium">{label}</td>
+                      <td className="px-4 py-2 text-sm text-slate-700 text-right font-bold">{Number(val.toFixed(2))}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                {entries.length > 0 && (
+                  <tfoot className="bg-slate-50 font-bold border-t-2 border-slate-200 sticky bottom-0 z-10 shadow-[0_-2px_10px_rgba(0,0,0,0.05)]">
+                    <tr>
+                      <td className="px-4 py-3 text-sm text-blue-900">總計</td>
+                      <td className="px-4 py-3 text-sm text-blue-900 text-right">{Number(total.toFixed(2))}</td>
+                    </tr>
+                  </tfoot>
+                )}
+              </table>
+          </div>
         </div>
       );
     };
 
-    // 已取得專利專用三合一圖表 (去除各部門總和藍柱，僅保留發明、新型，與一個獨立的全公司總和)
     const AcquiredBarChart = ({ data, title, iconName, blockId, handleDragStart, handleDrop, handleDragOver, chartType, colors }) => {
         const totalItem = data['總公司總計'];
         const depts = Object.entries(data).filter(([k]) => k !== '總公司總計').map(([name, counts]) => ({
@@ -344,7 +364,7 @@
             case 'bar':
             default:
                 chartElement = (
-                    <BarChart data={chartData} margin={{ top: 25, right: 10, left: -20, bottom: 40 }}>
+                    <BarChart data={chartData} margin={{ top: 35, right: 20, left: -20, bottom: 40 }}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
                         <XAxis dataKey="name" tick={{fontSize: 11, fill: '#64748b'}} angle={-25} textAnchor="end" tickLine={false} axisLine={{stroke: '#cbd5e1'}} height={50} />
                         <YAxis tick={{fontSize: 12, fill: '#475569', fontWeight: 600}} tickLine={false} axisLine={{stroke: '#cbd5e1'}} allowDecimals={false} />
@@ -352,28 +372,31 @@
                         <Legend wrapperStyle={{ fontSize: '12px', marginTop: '10px' }} />
                         
                         <Bar dataKey="totalAll" name="全公司總計" fill={colors.acquiredTotal || '#3b82f6'} radius={[4, 4, 0, 0]} barSize={30}>
-                            <LabelList dataKey="totalAll" position="top" fill={colors.acquiredTotal || '#3b82f6'} fontSize={11} fontWeight="bold" />
+                            <LabelList dataKey="totalAll" position="top" fill={colors.acquiredTotal || '#3b82f6'} fontSize={11} fontWeight="bold" offset={10} />
                         </Bar>
                         <Bar dataKey="invention" name="發明專利" fill={colors.acquiredInvention || '#e11d48'} radius={[4, 4, 0, 0]} barSize={20}>
-                            <LabelList dataKey="invention" position="top" fill={colors.acquiredInvention || '#e11d48'} fontSize={11} fontWeight="bold" />
+                            <LabelList dataKey="invention" position="top" fill={colors.acquiredInvention || '#e11d48'} fontSize={11} fontWeight="bold" offset={10} />
                         </Bar>
                         <Bar dataKey="utility" name="新型專利" fill={colors.acquiredUtility || '#d97706'} radius={[4, 4, 0, 0]} barSize={20}>
-                            <LabelList dataKey="utility" position="top" fill={colors.acquiredUtility || '#d97706'} fontSize={11} fontWeight="bold" />
+                            <LabelList dataKey="utility" position="top" fill={colors.acquiredUtility || '#d97706'} fontSize={11} fontWeight="bold" offset={10} />
                         </Bar>
                     </BarChart>
                 );
         }
 
         return (
-            <div className="bg-white/95 backdrop-blur p-4 rounded-xl shadow-sm border border-slate-200 h-[380px] relative group"
+            <div className="bg-white/95 backdrop-blur p-4 rounded-xl shadow-sm border border-slate-200 h-[380px] relative group flex flex-col"
                 draggable={true} onDragStart={(e) => handleDragStart(e, blockId)} onDragOver={handleDragOver} onDrop={(e) => handleDrop(e, blockId)}>
-                <div className="flex items-center gap-2 mb-4 cursor-grab active:cursor-grabbing">
+                <div className="flex items-center gap-2 mb-2 cursor-grab active:cursor-grabbing shrink-0">
                     <Icon name="GripVertical" className="w-5 h-5 text-slate-300 group-hover:text-slate-500 transition-colors" />
                     <Icon name={iconName} className="w-5 h-5 text-slate-600" />
-                    <h3 className="font-bold text-slate-800 select-none">{title}</h3>
+                    <h3 className="font-bold text-slate-800 select-none flex-1 flex items-center justify-between">
+                        {title}
+                        {totalItem && totalItem.total > 0 && <span className="text-blue-700 bg-blue-50 px-2 py-0.5 rounded text-xs">總取得: {Number(totalItem.total.toFixed(2))} 件</span>}
+                    </h3>
                 </div>
-                {chartData.length === 0 ? <p className="text-slate-400 text-sm text-center py-4 select-none">暫無數據</p> : (
-                    <ResponsiveContainer width="100%" height="80%">
+                {chartData.length === 0 ? <p className="text-slate-400 text-sm text-center py-4 select-none flex-1">暫無數據</p> : (
+                    <ResponsiveContainer width="100%" height="100%" className="flex-1">
                         {chartElement}
                     </ResponsiveContainer>
                 )}
@@ -386,43 +409,42 @@
       const totalItem = data['總公司總計'];
       const entries = Object.entries(data).filter(([k]) => k !== '總公司總計').sort((a, b) => b[1].total - a[1].total);
       return (
-        <div className="bg-white/95 backdrop-blur rounded-xl shadow-sm border border-slate-200 overflow-hidden h-fit">
-          <table className="min-w-full divide-y divide-slate-200">
-            <thead className="bg-slate-100">
-              <tr>
-                <th className="px-4 py-3 text-left text-xs font-bold text-slate-600">部門名稱</th>
-                <th className="px-4 py-3 text-right text-xs font-bold text-blue-700">總計</th>
-                <th className="px-4 py-3 text-right text-xs font-bold text-rose-600">發明</th>
-                <th className="px-4 py-3 text-right text-xs font-bold text-amber-600">新型</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {entries.length === 0 && !totalItem ? <tr><td colSpan="4" className="px-4 py-4 text-center text-sm text-slate-400">尚無資料</td></tr> : null}
-              {totalItem && totalItem.total > 0 && (
-                 <tr className="bg-blue-50/70 hover:bg-blue-100/70 transition-colors border-b-2 border-blue-200">
-                   <td className="px-4 py-2 text-sm text-blue-900 font-extrabold">【全公司總和】</td>
-                   <td className="px-4 py-2 text-sm text-blue-900 text-right font-extrabold">{Number(totalItem.total.toFixed(2))}</td>
-                   <td className="px-4 py-2 text-sm text-rose-700 text-right font-bold">{Number(totalItem.invention.toFixed(2))}</td>
-                   <td className="px-4 py-2 text-sm text-amber-700 text-right font-bold">{Number(totalItem.utility.toFixed(2))}</td>
-                 </tr>
-              )}
-              {entries.map(([label, counts]) => (
-                <tr key={label} className="hover:bg-slate-50 transition-colors">
-                  <td className="px-4 py-2 text-sm text-slate-700 font-medium">{label}</td>
-                  <td className="px-4 py-2 text-sm text-blue-700 text-right font-bold">{Number(counts.total.toFixed(2))}</td>
-                  <td className="px-4 py-2 text-sm text-rose-600 text-right font-bold">{Number(counts.invention.toFixed(2))}</td>
-                  <td className="px-4 py-2 text-sm text-amber-600 text-right font-bold">{Number(counts.utility.toFixed(2))}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="bg-white/95 backdrop-blur rounded-xl shadow-sm border border-slate-200 overflow-hidden h-fit max-h-[380px] flex flex-col">
+          <div className="overflow-y-auto flex-1">
+              <table className="min-w-full divide-y divide-slate-200 relative">
+                <thead className="bg-slate-100 sticky top-0 z-10">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-xs font-bold text-slate-600">部門名稱</th>
+                    <th className="px-4 py-3 text-right text-xs font-bold text-blue-700">總計</th>
+                    <th className="px-4 py-3 text-right text-xs font-bold text-rose-600">發明</th>
+                    <th className="px-4 py-3 text-right text-xs font-bold text-amber-600">新型</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {entries.length === 0 && !totalItem ? <tr><td colSpan="4" className="px-4 py-4 text-center text-sm text-slate-400">尚無資料</td></tr> : null}
+                  {entries.map(([label, counts]) => (
+                    <tr key={label} className="hover:bg-slate-50 transition-colors">
+                      <td className="px-4 py-2 text-sm text-slate-700 font-medium">{label}</td>
+                      <td className="px-4 py-2 text-sm text-blue-700 text-right font-bold">{Number(counts.total.toFixed(2))}</td>
+                      <td className="px-4 py-2 text-sm text-rose-600 text-right font-bold">{Number(counts.invention.toFixed(2))}</td>
+                      <td className="px-4 py-2 text-sm text-amber-600 text-right font-bold">{Number(counts.utility.toFixed(2))}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                {totalItem && totalItem.total > 0 && (
+                  <tfoot className="bg-slate-50 font-bold border-t-2 border-slate-200 sticky bottom-0 z-10 shadow-[0_-2px_10px_rgba(0,0,0,0.05)]">
+                     <tr>
+                       <td className="px-4 py-3 text-sm text-blue-900 font-extrabold">【全公司總計】</td>
+                       <td className="px-4 py-3 text-sm text-blue-900 text-right font-extrabold">{Number(totalItem.total.toFixed(2))}</td>
+                       <td className="px-4 py-3 text-sm text-rose-700 text-right font-bold">{Number(totalItem.invention.toFixed(2))}</td>
+                       <td className="px-4 py-3 text-sm text-amber-700 text-right font-bold">{Number(totalItem.utility.toFixed(2))}</td>
+                     </tr>
+                  </tfoot>
+                )}
+              </table>
+          </div>
         </div>
       );
-    };
-
-    const autoResizeTextarea = (e) => {
-        e.target.style.height = 'auto';
-        e.target.style.height = e.target.scrollHeight + 'px';
     };
 
     // ==========================================
@@ -511,6 +533,8 @@
                  } else if (!order.includes('acquired')) {
                      order.push('acquired');
                  }
+                 if(!order.includes('regionType')) order.push('regionType');
+                 if(!order.includes('indicator')) order.push('indicator');
                  setDashboardOrder(order);
 
                  if(uiPrefs.chartColors) { 
@@ -587,6 +611,8 @@
              } else if (!order.includes('acquired')) {
                  order.push('acquired');
              }
+             if(!order.includes('regionType')) order.push('regionType');
+             if(!order.includes('indicator')) order.push('indicator');
              setDashboardOrder(order);
 
              if (prefs.chartColors) { 
@@ -1028,10 +1054,10 @@
                         itemsToSave.push({
                           id: rowId,
                           firebaseId: fbId,
-                          agency: agencyStr, department: getVal(['部門']), inventors: getVal(['發明人']), region: getVal(['國家', '國別', '地區']),
+                          agency: agencyStr, department: getVal(['部門', '單位']), inventors: getVal(['發明人']), region: getVal(['國家', '國別', '地區']),
                           isUtility: getBool(['新型']), isInvention: getBool(['發明']), name: nameStr, isCore: getBool(['核心技術', '核心']),
-                          isBonus: getBool(['申請獎金', '獎金']), notes: getVal(['備註']), applyDate: getVal(['申請日期', '申請日', '送件']),
-                          status: finalStatus, certDate: getVal(['證書日期', '證書日', '公告日期']), certNum: getVal(['專利證書號', '證書號', '公開號']), duration: getVal(['專利權期間', '專利期間', '期間']),
+                          isBonus: getBool(['申請獎金', '獎金']), notes: getVal(['備註']), applyDate: getVal(['申請日期', '申請日', '送件', '智財局日期']),
+                          status: finalStatus, certDate: getVal(['證書日期', '證書日', '公告日期']), certNum: getVal(['專利證書號', '證書號', '公開號', '公告號']), duration: getVal(['專利權期間', '專利期間', '期間']),
                           statusHistory: finalStatusHistory,
                           createdAt: existingPatent?.createdAt || new Date().toISOString()
                         });
@@ -1210,15 +1236,19 @@
           return inventorsData.filter(inv => Object.values(inv).some(val => String(val).toLowerCase().includes(lowerTerm)));
       }, [inventorsData, searchInventorTerm]);
 
+      // --- 進階統計計算 ---
       const stats = useMemo(() => {
         const deptCounts = {}; 
         const statusCounts = {}; 
         const agencyCounts = {};
         const acquiredCounts = { '總公司總計': { total: 0, invention: 0, utility: 0 } };
+        const regionTypeCounts = {};
+        const indicatorCounts = { '核心技術': 0, '申請獎金': 0 };
 
         filteredPatents.forEach(p => {
           const isAcquired = p.status && String(p.status).includes('已取得');
 
+          // 部門申請量與取得總數
           if (p.department) {
              const depts = p.department.split(/[/\\、,]/).map(d => d.trim()).filter(d => d);
              if (depts.length > 0) {
@@ -1242,11 +1272,33 @@
                  });
              }
           }
+
+          // 狀態與事務所
           if (p.status) statusCounts[p.status] = (statusCounts[p.status] || 0) + 1;
           if (p.agency) agencyCounts[p.agency] = (agencyCounts[p.agency] || 0) + 1;
+
+          // 國別與專利類型
+          if (p.region) {
+              if (p.isUtility) {
+                  const key = `(${p.region})新型專利`;
+                  regionTypeCounts[key] = (regionTypeCounts[key] || 0) + 1;
+              }
+              if (p.isInvention) {
+                  const key = `(${p.region})發明專利`;
+                  regionTypeCounts[key] = (regionTypeCounts[key] || 0) + 1;
+              }
+          }
+
+          // 核心與獎金指標
+          if (p.isCore) indicatorCounts['核心技術'] += 1;
+          if (p.isBonus) indicatorCounts['申請獎金'] += 1;
         });
 
-        return { deptCounts, statusCounts, agencyCounts, acquiredCounts };
+        // 過濾掉為0的指標
+        if(indicatorCounts['核心技術'] === 0) delete indicatorCounts['核心技術'];
+        if(indicatorCounts['申請獎金'] === 0) delete indicatorCounts['申請獎金'];
+
+        return { deptCounts, statusCounts, agencyCounts, acquiredCounts, regionTypeCounts, indicatorCounts };
       }, [filteredPatents]);
 
       if (loading) return <div className="min-h-screen flex items-center justify-center bg-slate-50 text-slate-500 font-medium">系統核心載入中，請稍候...</div>;
@@ -1260,9 +1312,21 @@
          
          if (blockId === 'agency') return <div key="agency" className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start"><SingleDatasetChart data={stats.agencyCounts} title="3. 事務所接案量分佈" iconName="Building2" blockId="agency" chartType={chartTypes.agency} baseColor={chartColors.agency} handleDragStart={handleBlockDragStart} handleDrop={handleBlockDrop} handleDragOver={handleBlockDragOver}/><div><StatsTable data={stats.agencyCounts} headCol1="事務所名稱" headCol2="委託件數" /></div></div>;
          
-         if (blockId === 'acquired') return <div key="acquired" className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start"><AcquiredBarChart data={stats.acquiredCounts} title="4. 已取得專利綜合戰力" iconName="Award" blockId="acquired" chartType={chartTypes.acquired} colors={chartColors} handleDragStart={handleBlockDragStart} handleDrop={handleBlockDrop} handleDragOver={handleBlockDragOver}/><div><AcquiredStatsTable data={stats.acquiredCounts} /></div></div>;
+         if (blockId === 'regionType') return <div key="regionType" className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start"><SingleDatasetChart data={stats.regionTypeCounts} title="4. 國別與專利類型統計" iconName="Globe" blockId="regionType" chartType={chartTypes.regionType} baseColor={chartColors.regionType} handleDragStart={handleBlockDragStart} handleDrop={handleBlockDrop} handleDragOver={handleBlockDragOver}/><div><StatsTable data={stats.regionTypeCounts} headCol1="國別與類型" headCol2="件數" /></div></div>;
+         
+         if (blockId === 'indicator') return <div key="indicator" className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start"><SingleDatasetChart data={stats.indicatorCounts} title="5. 專利特殊指標統計" iconName="Target" blockId="indicator" chartType={chartTypes.indicator} baseColor={chartColors.indicator} handleDragStart={handleBlockDragStart} handleDrop={handleBlockDrop} handleDragOver={handleBlockDragOver}/><div><StatsTable data={stats.indicatorCounts} headCol1="指標名稱" headCol2="件數" /></div></div>;
+
+         if (blockId === 'acquired') return <div key="acquired" className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start"><AcquiredBarChart data={stats.acquiredCounts} title="6. 已取得專利綜合戰力" iconName="Award" blockId="acquired" chartType={chartTypes.acquired} colors={chartColors} handleDragStart={handleBlockDragStart} handleDrop={handleBlockDrop} handleDragOver={handleBlockDragOver}/><div><AcquiredStatsTable data={stats.acquiredCounts} /></div></div>;
          return null;
       };
+
+      const CHART_CONFIGS = [
+          { id: 'dept', label: '1. 部門申請量統計' },
+          { id: 'status', label: '2. 專利目前狀態進度' },
+          { id: 'agency', label: '3. 事務所接案量分佈' },
+          { id: 'regionType', label: '4. 國別與專利類型統計' },
+          { id: 'indicator', label: '5. 專利特殊指標統計' },
+      ];
 
       return (
         <div className="min-h-screen text-slate-800 font-sans flex flex-col transition-all duration-500 relative" 
@@ -1974,65 +2038,33 @@
                           <Icon name="BarChart" className="w-4 h-4 text-purple-600" /> 儀表板視覺與圖表設定
                         </h4>
                         <div className="bg-slate-50 p-2 rounded-xl border border-slate-200 shadow-inner overflow-hidden">
-                            <div className="flex items-center justify-between py-2 border-b border-slate-200">
-                                <label className="flex items-center gap-2 cursor-pointer">
-                                    <input type="checkbox" checked={tempVisibleBlocks.includes('dept')} onChange={() => {
-                                        setTempVisibleBlocks(prev => prev.includes('dept') ? prev.filter(b => b !== 'dept') : [...prev, 'dept']);
-                                    }} className="w-4 h-4 accent-blue-600" />
-                                    <span className="text-sm font-bold text-slate-700">1. 部門申請量</span>
-                                </label>
-                                <div className="flex items-center gap-1">
-                                    <input type="color" value={tempChartColors.dept || '#2563eb'} onChange={e => setTempChartColors({...tempChartColors, dept: e.target.value})} className="w-6 h-6 p-0 border-0 rounded cursor-pointer" />
-                                    <select value={tempChartTypes.dept || 'bar'} onChange={e => setTempChartTypes({...tempChartTypes, dept: e.target.value})} className="border border-slate-300 rounded p-1 text-xs">
-                                        <option value="bar">直條圖</option>
-                                        <option value="horizontalBar">橫條圖</option>
-                                        <option value="pie">圓餅圖</option>
-                                        <option value="donut">環圈圖</option>
-                                        <option value="line">折線圖</option>
-                                        <option value="area">面積圖</option>
-                                    </select>
+                            {[
+                                { id: 'dept', label: '1. 部門申請量統計' },
+                                { id: 'status', label: '2. 專利目前狀態進度' },
+                                { id: 'agency', label: '3. 事務所接案量分佈' },
+                                { id: 'regionType', label: '4. 國別與專利類型統計' },
+                                { id: 'indicator', label: '5. 專利特殊指標統計' }
+                            ].map(cfg => (
+                                <div key={cfg.id} className="flex items-center justify-between py-2 border-b border-slate-200">
+                                    <label className="flex items-center gap-2 cursor-pointer">
+                                        <input type="checkbox" checked={tempVisibleBlocks.includes(cfg.id)} onChange={() => {
+                                            setTempVisibleBlocks(prev => prev.includes(cfg.id) ? prev.filter(b => b !== cfg.id) : [...prev, cfg.id]);
+                                        }} className="w-4 h-4 accent-blue-600" />
+                                        <span className="text-sm font-bold text-slate-700">{cfg.label}</span>
+                                    </label>
+                                    <div className="flex items-center gap-1">
+                                        <input type="color" value={tempChartColors[cfg.id] || DEFAULT_COLORS[cfg.id]} onChange={e => setTempChartColors({...tempChartColors, [cfg.id]: e.target.value})} className="w-6 h-6 p-0 border-0 rounded cursor-pointer" />
+                                        <select value={tempChartTypes[cfg.id] || DEFAULT_CHART_TYPES[cfg.id]} onChange={e => setTempChartTypes({...tempChartTypes, [cfg.id]: e.target.value})} className="border border-slate-300 rounded p-1 text-xs w-[60px]">
+                                            <option value="bar">直條圖</option>
+                                            <option value="horizontalBar">橫條圖</option>
+                                            <option value="pie">圓餅圖</option>
+                                            <option value="donut">環圈圖</option>
+                                            <option value="line">折線圖</option>
+                                            <option value="area">面積圖</option>
+                                        </select>
+                                    </div>
                                 </div>
-                            </div>
-                            
-                            <div className="flex items-center justify-between py-2 border-b border-slate-200">
-                                <label className="flex items-center gap-2 cursor-pointer">
-                                    <input type="checkbox" checked={tempVisibleBlocks.includes('status')} onChange={() => {
-                                        setTempVisibleBlocks(prev => prev.includes('status') ? prev.filter(b => b !== 'status') : [...prev, 'status']);
-                                    }} className="w-4 h-4 accent-blue-600" />
-                                    <span className="text-sm font-bold text-slate-700">2. 狀態進度分布</span>
-                                </label>
-                                <div className="flex items-center gap-1">
-                                    <input type="color" value={tempChartColors.status || '#059669'} onChange={e => setTempChartColors({...tempChartColors, status: e.target.value})} className="w-6 h-6 p-0 border-0 rounded cursor-pointer" />
-                                    <select value={tempChartTypes.status || 'horizontalBar'} onChange={e => setTempChartTypes({...tempChartTypes, status: e.target.value})} className="border border-slate-300 rounded p-1 text-xs">
-                                        <option value="bar">直條圖</option>
-                                        <option value="horizontalBar">橫條圖</option>
-                                        <option value="pie">圓餅圖</option>
-                                        <option value="donut">環圈圖</option>
-                                        <option value="line">折線圖</option>
-                                        <option value="area">面積圖</option>
-                                    </select>
-                                </div>
-                            </div>
-
-                            <div className="flex items-center justify-between py-2 border-b border-slate-200">
-                                <label className="flex items-center gap-2 cursor-pointer">
-                                    <input type="checkbox" checked={tempVisibleBlocks.includes('agency')} onChange={() => {
-                                        setTempVisibleBlocks(prev => prev.includes('agency') ? prev.filter(b => b !== 'agency') : [...prev, 'agency']);
-                                    }} className="w-4 h-4 accent-blue-600" />
-                                    <span className="text-sm font-bold text-slate-700">3. 事務所接案量</span>
-                                </label>
-                                <div className="flex items-center gap-1">
-                                    <input type="color" value={tempChartColors.agency || '#4f46e5'} onChange={e => setTempChartColors({...tempChartColors, agency: e.target.value})} className="w-6 h-6 p-0 border-0 rounded cursor-pointer" />
-                                    <select value={tempChartTypes.agency || 'pie'} onChange={e => setTempChartTypes({...tempChartTypes, agency: e.target.value})} className="border border-slate-300 rounded p-1 text-xs">
-                                        <option value="bar">直條圖</option>
-                                        <option value="horizontalBar">橫條圖</option>
-                                        <option value="pie">圓餅圖</option>
-                                        <option value="donut">環圈圖</option>
-                                        <option value="line">折線圖</option>
-                                        <option value="area">面積圖</option>
-                                    </select>
-                                </div>
-                            </div>
+                            ))}
 
                             <div className="flex flex-col py-2">
                                 <div className="flex items-center justify-between mb-2">
@@ -2040,7 +2072,7 @@
                                         <input type="checkbox" checked={tempVisibleBlocks.includes('acquired')} onChange={() => {
                                             setTempVisibleBlocks(prev => prev.includes('acquired') ? prev.filter(b => b !== 'acquired') : [...prev, 'acquired']);
                                         }} className="w-4 h-4 accent-blue-600" />
-                                        <span className="text-sm font-bold text-slate-700">4. 已取得專利 (多維度)</span>
+                                        <span className="text-sm font-bold text-slate-700">6. 已取得專利 (多維度)</span>
                                     </label>
                                     <select value={tempChartTypes.acquired || 'bar'} onChange={e => setTempChartTypes({...tempChartTypes, acquired: e.target.value})} className="border border-slate-300 rounded p-1 text-xs">
                                         <option value="bar">直條圖</option>
