@@ -1,0 +1,2165 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>偉勝乾燥 - 專利管理系統</title>
+  
+  <!-- Tailwind CSS 載入 -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- React 與 ReactDOM 載入 -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  
+  <!-- Babel 載入，用於編譯 JSX -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  
+  <!-- 引入 Recharts -->
+  <script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
+  <script src="https://unpkg.com/recharts@2.1.12/umd/Recharts.js"></script>
+
+  <!-- 引入 SheetJS (用於完美解析與匯出 Excel xlsx 檔案) -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+  <style>
+    .recharts-wrapper { margin: 0 auto; }
+    
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: rgba(241, 245, 249, 0.5); border-radius: 5px; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 5px; }
+    ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+    
+    .resizable-cell {
+      resize: both;
+      overflow: auto;
+      min-height: 42px;
+      background-image: linear-gradient(135deg, transparent 70%, rgba(148, 163, 184, 0.3) 70%, rgba(148, 163, 184, 0.3) 85%, transparent 85%);
+      background-position: bottom right;
+      background-repeat: no-repeat;
+      background-size: 10px 10px;
+    }
+    
+    select { text-align-last: inherit; }
+
+    @media print {
+      body * { visibility: hidden; }
+      #printable-grid, #printable-grid * { visibility: visible; }
+      #printable-grid { position: absolute; left: 0; top: 0; width: 100%; }
+      .print-hide { display: none !important; }
+      .resizable-cell { resize: none; border: 1px solid #e2e8f0; white-space: normal !important; }
+    }
+    
+    /* Toast 動畫 */
+    @keyframes slideInUp {
+      from { transform: translateY(100%); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+    .toast-animate { animation: slideInUp 0.3s ease-out forwards; }
+  </style>
+</head>
+<body class="bg-slate-50">
+  <div id="root"></div>
+
+  <script type="text/babel" data-type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
+    import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-auth.js";
+    import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
+
+    const { useState, useEffect, useMemo, useRef } = React;
+    const { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell, LabelList, PieChart: RechartsPieChart, Pie, LineChart, Line, AreaChart, Area } = window.Recharts;
+
+    const Icon = ({ name, className, title }) => {
+      const iconRef = useRef(null);
+      useEffect(() => {
+        if (iconRef.current) {
+          iconRef.current.innerHTML = '';
+          const svg = window.lucide.createElement(window.lucide.icons[name]);
+          if(svg) {
+             if(className) {
+                 className.split(' ').forEach(cls => {
+                     if(cls) svg.classList.add(cls);
+                 });
+             }
+             iconRef.current.appendChild(svg);
+          }
+        }
+      }, [name, className]);
+      return <span ref={iconRef} className="inline-block" style={{width: '1em', height: '1em'}} title={title}></span>;
+    };
+
+    // ==========================================
+    // 1. Firebase 初始化
+    // ==========================================
+    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+    let app, auth, db;
+    let useLocalFallback = false;
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'patent-system-local';
+
+    try {
+        if(Object.keys(firebaseConfig).length > 0) {
+            app = initializeApp(firebaseConfig);
+            auth = getAuth(app);
+            db = getFirestore(app);
+        } else {
+             useLocalFallback = true;
+        }
+    } catch (e) {
+        useLocalFallback = true;
+    }
+
+    // ==========================================
+    // 全域設定與預設值
+    // ==========================================
+    const DEFAULT_STATUSES = [
+      "暫不申請", "提案申請內部簽核中", "專利事務所撰寫專利中", 
+      "偉勝乾燥內部校稿中", "已給發明人資訊", "已送件至智慧財產局審查", 
+      "已送至中國區代理人申辦", "已取得(台灣)專利", "已取得(中國)專利"
+    ];
+
+    const DEFAULT_COLORS = { dept: '#2563eb', status: '#059669', agency: '#4f46e5', acquiredTotal: '#3b82f6', acquiredInvention: '#e11d48', acquiredUtility: '#d97706' };
+    const DEFAULT_CHART_TYPES = { dept: 'bar', status: 'bar', agency: 'pie', acquired: 'bar' };
+    const DEFAULT_VISIBLE_BLOCKS = ['dept', 'status', 'agency', 'acquired'];
+    const DEFAULT_ORDER = ['dept', 'status', 'agency', 'acquired'];
+    const DEFAULT_AGENCIES = ["權益國際專利事務所", "戰國策專利事務所", "仰正國際專利事務所", "仰正", "亞信國際", "友茂"];
+    const DEFAULT_REGIONS = ["台灣", "中國", "美國", "泰國"];
+    const DISTINCT_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#6366f1', '#84cc16'];
+
+    const COLUMNS_DEF = [
+       { key: 'id', label: '編號', alwaysVisible: true, minWidth: '60px' },
+       { key: 'agency', label: '專利事務所', minWidth: '140px' },
+       { key: 'department', label: '部門單位', minWidth: '150px' },
+       { key: 'inventors', label: '發明人', minWidth: '150px' },
+       { key: 'region', label: '國別', minWidth: '100px' },
+       { key: 'isUtility', label: '新型專利', minWidth: '90px' },
+       { key: 'isInvention', label: '發明專利', minWidth: '90px' },
+       { key: 'name', label: '專利名稱', minWidth: '250px' },
+       { key: 'isCore', label: '專利核心技術', minWidth: '110px' },
+       { key: 'isBonus', label: '已申請獎金', minWidth: '100px' },
+       { key: 'notes', label: '備註', minWidth: '200px' },
+       { key: 'applyDate', label: '送件智財局日期', minWidth: '140px' },
+       { key: 'status', label: '目前狀態', minWidth: '180px' },
+       { key: 'history', label: '歷程', minWidth: '60px' },
+       { key: 'certDate', label: '公告日期', minWidth: '130px' },
+       { key: 'certNum', label: '證書號/公開公告號', minWidth: '150px' },
+       { key: 'duration', label: '專利權期間', minWidth: '200px' }
+    ];
+
+    // 自訂 Tooltip 避免 null 值報錯
+    const CustomTooltip = ({ active, payload, label }) => {
+      if (active && payload && payload.length) {
+        return (
+          <div className="bg-white p-3 border border-slate-200 shadow-md rounded-lg">
+            <p className="font-bold text-slate-800 mb-1">{label}</p>
+            {payload.map((entry, index) => (
+              <p key={`item-${index}`} style={{ color: entry.color || entry.fill }} className="text-sm font-bold">
+                {entry.name}: {entry.value}
+              </p>
+            ))}
+          </div>
+        );
+      }
+      return null;
+    };
+
+    // ==========================================
+    // 輔助組件 (全新動態視覺化引擎)
+    // ==========================================
+    const SingleDatasetChart = ({ data, title, iconName, blockId, handleDragStart, handleDrop, handleDragOver, sortOrder, chartType, baseColor }) => {
+        let chartData = Object.entries(data).map(([name, value], index) => ({
+            name, value: Number(value.toFixed(2)), fill: DISTINCT_COLORS[index % DISTINCT_COLORS.length]
+        }));
+
+        if (sortOrder && sortOrder.length > 0) {
+            chartData.sort((a, b) => {
+                const idxA = sortOrder.indexOf(a.name);
+                const idxB = sortOrder.indexOf(b.name);
+                const valA = idxA === -1 ? 999 : idxA;
+                const valB = idxB === -1 ? 999 : idxB;
+                return valA - valB;
+            });
+        } else {
+            chartData.sort((a, b) => b.value - a.value);
+        }
+
+        let chartElement;
+        switch(chartType) {
+            case 'pie':
+            case 'donut':
+                chartElement = (
+                    <RechartsPieChart margin={{ top: 10, right: 10, left: 10, bottom: 10 }}>
+                        <Tooltip content={<CustomTooltip />} />
+                        <Legend wrapperStyle={{ fontSize: '12px' }} />
+                        <Pie data={chartData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} innerRadius={chartType==='donut'?50:0} label={({ value }) => `${value}`} labelLine={true}>
+                            {chartData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.fill} />)}
+                        </Pie>
+                    </RechartsPieChart>
+                );
+                break;
+            case 'line':
+                chartElement = (
+                    <LineChart data={chartData} margin={{ top: 25, right: 10, left: -20, bottom: 40 }}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                        <XAxis dataKey="name" tick={{fontSize: 11, fill: '#64748b'}} angle={-25} textAnchor="end" tickLine={false} axisLine={{stroke: '#cbd5e1'}} height={50} />
+                        <YAxis tick={{fontSize: 12, fill: '#475569', fontWeight: 600}} tickLine={false} axisLine={{stroke: '#cbd5e1'}} allowDecimals={false} />
+                        <Tooltip content={<CustomTooltip />} />
+                        <Line type="monotone" dataKey="value" stroke={baseColor} strokeWidth={3} dot={{r:4, fill: baseColor}} activeDot={{r: 6}} >
+                             <LabelList dataKey="value" position="top" fill="#64748b" fontSize={12} fontWeight="bold" />
+                        </Line>
+                    </LineChart>
+                );
+                break;
+            case 'area':
+                chartElement = (
+                    <AreaChart data={chartData} margin={{ top: 25, right: 10, left: -20, bottom: 40 }}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                        <XAxis dataKey="name" tick={{fontSize: 11, fill: '#64748b'}} angle={-25} textAnchor="end" tickLine={false} axisLine={{stroke: '#cbd5e1'}} height={50} />
+                        <YAxis tick={{fontSize: 12, fill: '#475569', fontWeight: 600}} tickLine={false} axisLine={{stroke: '#cbd5e1'}} allowDecimals={false} />
+                        <Tooltip content={<CustomTooltip />} />
+                        <Area type="monotone" dataKey="value" stroke={baseColor} fill={baseColor} fillOpacity={0.3} >
+                             <LabelList dataKey="value" position="top" fill="#64748b" fontSize={12} fontWeight="bold" />
+                        </Area>
+                    </AreaChart>
+                );
+                break;
+            case 'horizontalBar':
+                chartElement = (
+                    <BarChart data={chartData} layout="vertical" margin={{ top: 5, right: 30, left: 0, bottom: 5 }}>
+                        <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={true} stroke="#e2e8f0" />
+                        <XAxis type="number" tick={{fontSize: 12, fill: '#64748b'}} tickLine={false} axisLine={{stroke: '#cbd5e1'}} allowDecimals={true} />
+                        <YAxis dataKey="name" type="category" width={120} tick={{fontSize: 12, fill: '#475569', fontWeight: 600}} tickLine={false} axisLine={{stroke: '#cbd5e1'}} />
+                        <Tooltip content={<CustomTooltip />} />
+                        <Bar dataKey="value" radius={[0, 4, 4, 0]} barSize={20}>
+                            {chartData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.fill} />)}
+                            <LabelList dataKey="value" position="right" fill="#64748b" fontSize={12} fontWeight="bold" />
+                        </Bar>
+                    </BarChart>
+                );
+                break;
+            case 'bar':
+            default:
+                chartElement = (
+                    <BarChart data={chartData} margin={{ top: 25, right: 10, left: -20, bottom: 40 }}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                        <XAxis dataKey="name" tick={{fontSize: 11, fill: '#64748b'}} angle={-25} textAnchor="end" tickLine={false} axisLine={{stroke: '#cbd5e1'}} height={50} />
+                        <YAxis tick={{fontSize: 12, fill: '#475569', fontWeight: 600}} tickLine={false} axisLine={{stroke: '#cbd5e1'}} allowDecimals={false} />
+                        <Tooltip content={<CustomTooltip />} />
+                        <Bar dataKey="value" radius={[4, 4, 0, 0]} barSize={35}>
+                            {chartData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.fill} />)}
+                            <LabelList dataKey="value" position="top" fill="#64748b" fontSize={12} fontWeight="bold" />
+                        </Bar>
+                    </BarChart>
+                );
+        }
+
+        return (
+            <div className="bg-white/95 backdrop-blur p-4 rounded-xl shadow-sm border border-slate-200 h-[380px] relative group"
+                draggable={true} onDragStart={(e) => handleDragStart(e, blockId)} onDragOver={handleDragOver} onDrop={(e) => handleDrop(e, blockId)}>
+                <div className="flex items-center gap-2 mb-4 cursor-grab active:cursor-grabbing">
+                    <Icon name="GripVertical" className="w-5 h-5 text-slate-300 group-hover:text-slate-500 transition-colors" />
+                    <Icon name={iconName} className="w-5 h-5 text-slate-600" />
+                    <h3 className="font-bold text-slate-800 select-none">{title}</h3>
+                </div>
+                {chartData.length === 0 ? <p className="text-slate-400 text-sm text-center py-4 select-none">暫無數據</p> : (
+                    <ResponsiveContainer width="100%" height="80%">
+                        {chartElement}
+                    </ResponsiveContainer>
+                )}
+            </div>
+        );
+    };
+
+    const StatsTable = ({ data, headCol1, headCol2 }) => {
+      const entries = Object.entries(data).sort((a, b) => b[1] - a[1]);
+      return (
+        <div className="bg-white/95 backdrop-blur rounded-xl shadow-sm border border-slate-200 overflow-hidden h-fit">
+          <table className="min-w-full divide-y divide-slate-200">
+            <thead className="bg-slate-100">
+              <tr>
+                <th className="px-4 py-3 text-left text-xs font-bold text-slate-600">{headCol1}</th>
+                <th className="px-4 py-3 text-right text-xs font-bold text-slate-600">{headCol2}</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {entries.length === 0 ? <tr><td colSpan="2" className="px-4 py-4 text-center text-sm text-slate-400">尚無資料</td></tr> : null}
+              {entries.map(([label, val]) => (
+                <tr key={label} className="hover:bg-slate-50 transition-colors">
+                  <td className="px-4 py-2 text-sm text-slate-700 font-medium">{label}</td>
+                  <td className="px-4 py-2 text-sm text-slate-700 text-right font-bold">{Number(val.toFixed(2))}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    };
+
+    // 已取得專利專用三合一圖表 (去除各部門總和藍柱，僅保留發明、新型，與一個獨立的全公司總和)
+    const AcquiredBarChart = ({ data, title, iconName, blockId, handleDragStart, handleDrop, handleDragOver, chartType, colors }) => {
+        const totalItem = data['總公司總計'];
+        const depts = Object.entries(data).filter(([k]) => k !== '總公司總計').map(([name, counts]) => ({
+            name,
+            invention: counts.invention > 0 ? Number(counts.invention.toFixed(2)) : null,
+            utility: counts.utility > 0 ? Number(counts.utility.toFixed(2)) : null,
+            totalAll: counts.total
+        })).sort((a, b) => {
+            const sumA = (a.invention || 0) + (a.utility || 0);
+            const sumB = (b.invention || 0) + (b.utility || 0);
+            return sumB - sumA;
+        });
+
+        const chartData = [];
+        if (totalItem && totalItem.total > 0) {
+            chartData.push({ name: '【全公司總計】', totalAll: Number(totalItem.total.toFixed(2)) });
+        }
+        chartData.push(...depts);
+
+        let chartElement;
+        switch(chartType) {
+            case 'line':
+            case 'area':
+            case 'horizontalBar':
+                chartElement = (
+                    <BarChart data={chartData} layout="vertical" margin={{ top: 5, right: 40, left: 0, bottom: 5 }}>
+                        <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={true} stroke="#e2e8f0" />
+                        <XAxis type="number" tick={{fontSize: 12, fill: '#64748b'}} tickLine={false} axisLine={{stroke: '#cbd5e1'}} allowDecimals={true} />
+                        <YAxis dataKey="name" type="category" width={120} tick={{fontSize: 12, fill: '#475569', fontWeight: 600}} tickLine={false} axisLine={{stroke: '#cbd5e1'}} />
+                        <Tooltip content={<CustomTooltip />} />
+                        <Legend wrapperStyle={{ fontSize: '12px', marginTop: '10px' }} />
+                        <Bar dataKey="totalAll" name="全公司總計" fill={colors.acquiredTotal || '#3b82f6'} radius={[0, 4, 4, 0]} barSize={15}>
+                            <LabelList dataKey="totalAll" position="right" fill={colors.acquiredTotal || '#3b82f6'} fontSize={11} fontWeight="bold" />
+                        </Bar>
+                        <Bar dataKey="invention" name="發明專利" fill={colors.acquiredInvention || '#e11d48'} radius={[0, 4, 4, 0]} barSize={15}>
+                            <LabelList dataKey="invention" position="right" fill={colors.acquiredInvention || '#e11d48'} fontSize={11} fontWeight="bold" />
+                        </Bar>
+                        <Bar dataKey="utility" name="新型專利" fill={colors.acquiredUtility || '#d97706'} radius={[0, 4, 4, 0]} barSize={15}>
+                            <LabelList dataKey="utility" position="right" fill={colors.acquiredUtility || '#d97706'} fontSize={11} fontWeight="bold" />
+                        </Bar>
+                    </BarChart>
+                );
+                break;
+            case 'bar':
+            default:
+                chartElement = (
+                    <BarChart data={chartData} margin={{ top: 25, right: 10, left: -20, bottom: 40 }}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                        <XAxis dataKey="name" tick={{fontSize: 11, fill: '#64748b'}} angle={-25} textAnchor="end" tickLine={false} axisLine={{stroke: '#cbd5e1'}} height={50} />
+                        <YAxis tick={{fontSize: 12, fill: '#475569', fontWeight: 600}} tickLine={false} axisLine={{stroke: '#cbd5e1'}} allowDecimals={false} />
+                        <Tooltip content={<CustomTooltip />} />
+                        <Legend wrapperStyle={{ fontSize: '12px', marginTop: '10px' }} />
+                        
+                        <Bar dataKey="totalAll" name="全公司總計" fill={colors.acquiredTotal || '#3b82f6'} radius={[4, 4, 0, 0]} barSize={30}>
+                            <LabelList dataKey="totalAll" position="top" fill={colors.acquiredTotal || '#3b82f6'} fontSize={11} fontWeight="bold" />
+                        </Bar>
+                        <Bar dataKey="invention" name="發明專利" fill={colors.acquiredInvention || '#e11d48'} radius={[4, 4, 0, 0]} barSize={20}>
+                            <LabelList dataKey="invention" position="top" fill={colors.acquiredInvention || '#e11d48'} fontSize={11} fontWeight="bold" />
+                        </Bar>
+                        <Bar dataKey="utility" name="新型專利" fill={colors.acquiredUtility || '#d97706'} radius={[4, 4, 0, 0]} barSize={20}>
+                            <LabelList dataKey="utility" position="top" fill={colors.acquiredUtility || '#d97706'} fontSize={11} fontWeight="bold" />
+                        </Bar>
+                    </BarChart>
+                );
+        }
+
+        return (
+            <div className="bg-white/95 backdrop-blur p-4 rounded-xl shadow-sm border border-slate-200 h-[380px] relative group"
+                draggable={true} onDragStart={(e) => handleDragStart(e, blockId)} onDragOver={handleDragOver} onDrop={(e) => handleDrop(e, blockId)}>
+                <div className="flex items-center gap-2 mb-4 cursor-grab active:cursor-grabbing">
+                    <Icon name="GripVertical" className="w-5 h-5 text-slate-300 group-hover:text-slate-500 transition-colors" />
+                    <Icon name={iconName} className="w-5 h-5 text-slate-600" />
+                    <h3 className="font-bold text-slate-800 select-none">{title}</h3>
+                </div>
+                {chartData.length === 0 ? <p className="text-slate-400 text-sm text-center py-4 select-none">暫無數據</p> : (
+                    <ResponsiveContainer width="100%" height="80%">
+                        {chartElement}
+                    </ResponsiveContainer>
+                )}
+            </div>
+        );
+    };
+
+    // 三合一數據表格
+    const AcquiredStatsTable = ({ data }) => {
+      const totalItem = data['總公司總計'];
+      const entries = Object.entries(data).filter(([k]) => k !== '總公司總計').sort((a, b) => b[1].total - a[1].total);
+      return (
+        <div className="bg-white/95 backdrop-blur rounded-xl shadow-sm border border-slate-200 overflow-hidden h-fit">
+          <table className="min-w-full divide-y divide-slate-200">
+            <thead className="bg-slate-100">
+              <tr>
+                <th className="px-4 py-3 text-left text-xs font-bold text-slate-600">部門名稱</th>
+                <th className="px-4 py-3 text-right text-xs font-bold text-blue-700">總計</th>
+                <th className="px-4 py-3 text-right text-xs font-bold text-rose-600">發明</th>
+                <th className="px-4 py-3 text-right text-xs font-bold text-amber-600">新型</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {entries.length === 0 && !totalItem ? <tr><td colSpan="4" className="px-4 py-4 text-center text-sm text-slate-400">尚無資料</td></tr> : null}
+              {totalItem && totalItem.total > 0 && (
+                 <tr className="bg-blue-50/70 hover:bg-blue-100/70 transition-colors border-b-2 border-blue-200">
+                   <td className="px-4 py-2 text-sm text-blue-900 font-extrabold">【全公司總和】</td>
+                   <td className="px-4 py-2 text-sm text-blue-900 text-right font-extrabold">{Number(totalItem.total.toFixed(2))}</td>
+                   <td className="px-4 py-2 text-sm text-rose-700 text-right font-bold">{Number(totalItem.invention.toFixed(2))}</td>
+                   <td className="px-4 py-2 text-sm text-amber-700 text-right font-bold">{Number(totalItem.utility.toFixed(2))}</td>
+                 </tr>
+              )}
+              {entries.map(([label, counts]) => (
+                <tr key={label} className="hover:bg-slate-50 transition-colors">
+                  <td className="px-4 py-2 text-sm text-slate-700 font-medium">{label}</td>
+                  <td className="px-4 py-2 text-sm text-blue-700 text-right font-bold">{Number(counts.total.toFixed(2))}</td>
+                  <td className="px-4 py-2 text-sm text-rose-600 text-right font-bold">{Number(counts.invention.toFixed(2))}</td>
+                  <td className="px-4 py-2 text-sm text-amber-600 text-right font-bold">{Number(counts.utility.toFixed(2))}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    };
+
+    const autoResizeTextarea = (e) => {
+        e.target.style.height = 'auto';
+        e.target.style.height = e.target.scrollHeight + 'px';
+    };
+
+    // ==========================================
+    // 主程式 App
+    // ==========================================
+    function App() {
+      const [user, setUser] = useState(null);
+      const [patents, setPatents] = useState([]);
+      const [inventorsData, setInventorsData] = useState([]); 
+      const [statuses, setStatuses] = useState(DEFAULT_STATUSES);
+      const [agenciesList, setAgenciesList] = useState(DEFAULT_AGENCIES);
+      const [regionsList, setRegionsList] = useState(DEFAULT_REGIONS);
+      
+      const [systemName, setSystemName] = useState("偉勝乾燥 - 專利管理系統");
+      const [logoUrl, setLogoUrl] = useState("");
+      const [bgUrl, setBgUrl] = useState("");
+      
+      const [chartColors, setChartColors] = useState(DEFAULT_COLORS);
+      const [tempChartColors, setTempChartColors] = useState(DEFAULT_COLORS);
+      const [chartTypes, setChartTypes] = useState(DEFAULT_CHART_TYPES);
+      const [tempChartTypes, setTempChartTypes] = useState(DEFAULT_CHART_TYPES);
+      const [visibleBlocks, setVisibleBlocks] = useState(DEFAULT_VISIBLE_BLOCKS);
+      const [tempVisibleBlocks, setTempVisibleBlocks] = useState(DEFAULT_VISIBLE_BLOCKS);
+
+      const [dashboardOrder, setDashboardOrder] = useState(DEFAULT_ORDER);
+      const [visibleCols, setVisibleCols] = useState(COLUMNS_DEF.map(c => c.key));
+
+      const [loading, setLoading] = useState(true);
+      const [isImporting, setIsImporting] = useState(false);
+      const [searchTerm, setSearchTerm] = useState('');
+      const [searchInventorTerm, setSearchInventorTerm] = useState('');
+      
+      const [toastMsg, setToastMsg] = useState(null);
+      const [confirmDialog, setConfirmDialog] = useState(null);
+      
+      const [userRole, setUserRole] = useState('viewer');
+      const [showAdminLogin, setShowAdminLogin] = useState(false);
+      const [loginInput, setLoginInput] = useState('');
+      const [loginError, setLoginError] = useState('');
+
+      const [activeTab, setActiveTab] = useState('dashboard');
+      const [adminModalOpen, setAdminModalOpen] = useState(false);
+      const [showColPicker, setShowColPicker] = useState(false);
+      
+      const [activeCell, setActiveCell] = useState(null); 
+      const [activeHistoryPatentId, setActiveHistoryPatentId] = useState(null);
+
+      const fileInputRef = useRef(null);
+      const inventorFileInputRef = useRef(null);
+
+      const showToast = (msg, type='success') => {
+          setToastMsg({ msg, type });
+          setTimeout(() => setToastMsg(null), 3500);
+      };
+
+      const activePatentForHistory = useMemo(() => {
+          return activeHistoryPatentId ? patents.find(p => (p.firebaseId || p.id) === activeHistoryPatentId) : null;
+      }, [activeHistoryPatentId, patents]);
+
+      useEffect(() => {
+        if(useLocalFallback) {
+             setUser({ uid: 'local_user' });
+             const storedPatents = localStorage.getItem(`${appId}_patents`);
+             if(storedPatents) {
+                 const parsed = JSON.parse(storedPatents);
+                 parsed.sort((a, b) => b.id - a.id);
+                 setPatents(parsed);
+             }
+             
+             const storedInventors = localStorage.getItem(`${appId}_inventors`);
+             if(storedInventors) {
+                 const parsedInv = JSON.parse(storedInventors);
+                 parsedInv.sort((a, b) => a.id - b.id);
+                 setInventorsData(parsedInv);
+             }
+
+             const storedStatuses = localStorage.getItem(`${appId}_statuses`);
+             if(storedStatuses) setStatuses(JSON.parse(storedStatuses));
+
+             const storedUIPrefs = localStorage.getItem(`${appId}_ui_prefs`);
+             if(storedUIPrefs) {
+                 const uiPrefs = JSON.parse(storedUIPrefs);
+                 let order = uiPrefs.dashboardOrder || DEFAULT_ORDER;
+                 if(order.includes('acquiredInvention')) {
+                     order = order.map(o => o === 'acquiredInvention' ? 'acquired' : o).filter(o => o !== 'acquiredUtility');
+                 } else if (!order.includes('acquired')) {
+                     order.push('acquired');
+                 }
+                 setDashboardOrder(order);
+
+                 if(uiPrefs.chartColors) { 
+                    const colors = { ...DEFAULT_COLORS, ...uiPrefs.chartColors };
+                    setChartColors(colors); setTempChartColors(colors); 
+                 }
+                 if(uiPrefs.chartTypes) { 
+                    const types = { ...DEFAULT_CHART_TYPES, ...uiPrefs.chartTypes };
+                    setChartTypes(types); setTempChartTypes(types); 
+                 }
+                 if(uiPrefs.visibleBlocks) { setVisibleBlocks(uiPrefs.visibleBlocks); setTempVisibleBlocks(uiPrefs.visibleBlocks); }
+                 
+                 if(uiPrefs.agenciesList) setAgenciesList(uiPrefs.agenciesList);
+                 if(uiPrefs.regionsList) setRegionsList(uiPrefs.regionsList);
+                 if(uiPrefs.visibleCols) setVisibleCols(uiPrefs.visibleCols);
+                 if(uiPrefs.systemName) setSystemName(uiPrefs.systemName);
+                 if(uiPrefs.logoUrl) setLogoUrl(uiPrefs.logoUrl);
+                 if(uiPrefs.bgUrl) setBgUrl(uiPrefs.bgUrl);
+             }
+             setLoading(false);
+             return;
+        }
+
+        const initAuth = async () => {
+          try {
+            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+              await signInWithCustomToken(auth, __initial_auth_token);
+            } else {
+              await signInAnonymously(auth);
+            }
+          } catch (error) {
+            useLocalFallback = true;
+            setUser({ uid: 'local_user' });
+            setLoading(false);
+          }
+        };
+        initAuth();
+
+        const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
+          setUser(currentUser);
+        });
+        return () => unsubscribeAuth();
+      }, []);
+
+      useEffect(() => {
+        if (!user || useLocalFallback) return;
+
+        const patentsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'patents');
+        const unsubPatents = onSnapshot(patentsRef, (snapshot) => {
+          const data = snapshot.docs.map(doc => ({ firebaseId: doc.id, ...doc.data() }));
+          data.sort((a, b) => b.id - a.id); 
+          setPatents(data);
+          setLoading(false);
+        });
+
+        const inventorsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'inventors');
+        const unsubInventors = onSnapshot(inventorsRef, (snapshot) => {
+          const data = snapshot.docs.map(doc => ({ firebaseId: doc.id, ...doc.data() }));
+          data.sort((a, b) => a.id - b.id); 
+          setInventorsData(data);
+        });
+
+        const settingsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'settings');
+        const unsubSettings = onSnapshot(settingsRef, (snapshot) => {
+          const statusDoc = snapshot.docs.find(d => d.id === 'status_list');
+          if (statusDoc && statusDoc.data().list) setStatuses(statusDoc.data().list);
+
+          const uiDoc = snapshot.docs.find(d => d.id === 'ui_prefs');
+          if (uiDoc && uiDoc.data()) {
+             const prefs = uiDoc.data();
+             let order = prefs.dashboardOrder || DEFAULT_ORDER;
+             if(order.includes('acquiredInvention')) {
+                 order = order.map(o => o === 'acquiredInvention' ? 'acquired' : o).filter(o => o !== 'acquiredUtility');
+             } else if (!order.includes('acquired')) {
+                 order.push('acquired');
+             }
+             setDashboardOrder(order);
+
+             if (prefs.chartColors) { 
+                 const colors = { ...DEFAULT_COLORS, ...prefs.chartColors };
+                 setChartColors(colors); setTempChartColors(colors); 
+             }
+             if (prefs.chartTypes) { 
+                 const types = { ...DEFAULT_CHART_TYPES, ...prefs.chartTypes };
+                 setChartTypes(types); setTempChartTypes(types); 
+             }
+             if (prefs.visibleBlocks) { setVisibleBlocks(prefs.visibleBlocks); setTempVisibleBlocks(prefs.visibleBlocks); }
+
+             if (prefs.agenciesList) setAgenciesList(prefs.agenciesList);
+             if (prefs.regionsList) setRegionsList(prefs.regionsList);
+             if (prefs.visibleCols) setVisibleCols(prefs.visibleCols);
+             if (prefs.systemName) setSystemName(prefs.systemName);
+             if (prefs.logoUrl) setLogoUrl(prefs.logoUrl);
+             if (prefs.bgUrl) setBgUrl(prefs.bgUrl);
+          }
+        });
+
+        return () => {
+          unsubPatents();
+          unsubInventors();
+          unsubSettings();
+        };
+      }, [user]);
+
+      const saveData = async (type, dataToSave, id) => {
+          if (useLocalFallback) {
+              if (type === 'patent_add') {
+                  const newPatents = [dataToSave, ...patents]; 
+                  newPatents.sort((a, b) => b.id - a.id);
+                  setPatents(newPatents);
+                  localStorage.setItem(`${appId}_patents`, JSON.stringify(newPatents));
+              } else if (type === 'patent_update') {
+                  const newPatents = patents.map(p => p.id === id || p.firebaseId === id ? { ...p, ...dataToSave } : p);
+                  setPatents(newPatents);
+                  localStorage.setItem(`${appId}_patents`, JSON.stringify(newPatents));
+              } else if (type === 'patent_delete') {
+                  const newPatents = patents.filter(p => p.id !== id && p.firebaseId !== id);
+                  setPatents(newPatents);
+                  localStorage.setItem(`${appId}_patents`, JSON.stringify(newPatents));
+              } else if (type === 'inventor_add') {
+                  const newInv = [...inventorsData, dataToSave].sort((a, b) => a.id - b.id);
+                  setInventorsData(newInv);
+                  localStorage.setItem(`${appId}_inventors`, JSON.stringify(newInv));
+              } else if (type === 'inventor_update') {
+                  const newInv = inventorsData.map(p => p.id === id || p.firebaseId === id ? { ...p, ...dataToSave } : p);
+                  setInventorsData(newInv);
+                  localStorage.setItem(`${appId}_inventors`, JSON.stringify(newInv));
+              } else if (type === 'inventor_delete') {
+                  const newInv = inventorsData.filter(p => p.id !== id && p.firebaseId !== id);
+                  setInventorsData(newInv);
+                  localStorage.setItem(`${appId}_inventors`, JSON.stringify(newInv));
+              } else if (type === 'statuses') {
+                  setStatuses(dataToSave);
+                  localStorage.setItem(`${appId}_statuses`, JSON.stringify(dataToSave));
+              } else if (type === 'ui_prefs') {
+                  const oldPrefs = JSON.parse(localStorage.getItem(`${appId}_ui_prefs`)) || {};
+                  localStorage.setItem(`${appId}_ui_prefs`, JSON.stringify({...oldPrefs, ...dataToSave}));
+              } else if (type === 'patent_import') {
+                  const currentPatents = [...patents];
+                  dataToSave.forEach(newItem => {
+                      const existingIndex = currentPatents.findIndex(p => p.id === newItem.id);
+                      if (existingIndex >= 0) {
+                          currentPatents[existingIndex] = { ...currentPatents[existingIndex], ...newItem };
+                      } else {
+                          currentPatents.push(newItem);
+                      }
+                  });
+                  currentPatents.sort((a,b) => b.id - a.id);
+                  setPatents(currentPatents);
+                  localStorage.setItem(`${appId}_patents`, JSON.stringify(currentPatents));
+              } else if (type === 'inventor_import') {
+                  const currentInv = [...inventorsData];
+                  dataToSave.forEach(newItem => {
+                      const existingIndex = currentInv.findIndex(p => p.id === newItem.id);
+                      if (existingIndex >= 0) {
+                          currentInv[existingIndex] = { ...currentInv[existingIndex], ...newItem };
+                      } else {
+                          currentInv.push(newItem);
+                      }
+                  });
+                  currentInv.sort((a,b) => a.id - b.id);
+                  setInventorsData(currentInv);
+                  localStorage.setItem(`${appId}_inventors`, JSON.stringify(currentInv));
+              }
+              return;
+          }
+
+          try {
+             if (type === 'patent_add') {
+                 const docRef = doc(collection(db, 'artifacts', appId, 'users', user.uid, 'patents'));
+                 await setDoc(docRef, dataToSave);
+             } else if (type === 'patent_update') {
+                 const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'patents', id);
+                 await setDoc(docRef, dataToSave, { merge: true });
+             } else if (type === 'patent_delete') {
+                 await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'patents', id));
+             } else if (type === 'inventor_add') {
+                 const docRef = doc(collection(db, 'artifacts', appId, 'users', user.uid, 'inventors'));
+                 await setDoc(docRef, dataToSave);
+             } else if (type === 'inventor_update') {
+                 const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'inventors', id);
+                 await setDoc(docRef, dataToSave, { merge: true });
+             } else if (type === 'inventor_delete') {
+                 await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'inventors', id));
+             } else if (type === 'statuses') {
+                 const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'status_list');
+                 await setDoc(docRef, { list: dataToSave });
+             } else if (type === 'ui_prefs') {
+                 const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'ui_prefs');
+                 await setDoc(docRef, dataToSave, { merge: true });
+             } else if (type === 'patent_import') {
+                 const promises = dataToSave.map(item => {
+                     const fbId = item.firebaseId;
+                     const itemData = { ...item };
+                     delete itemData.firebaseId; 
+                     const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'patents', String(fbId));
+                     return setDoc(docRef, itemData, { merge: true });
+                 });
+                 await Promise.all(promises);
+             } else if (type === 'inventor_import') {
+                 const promises = dataToSave.map(item => {
+                     const fbId = item.firebaseId;
+                     const itemData = { ...item };
+                     delete itemData.firebaseId; 
+                     const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'inventors', String(fbId));
+                     return setDoc(docRef, itemData, { merge: true });
+                 });
+                 await Promise.all(promises);
+             }
+          } catch (err) {
+              console.error("Firebase 儲存錯誤:", err);
+          }
+      };
+
+      const handleAdminLogin = (e) => {
+        e.preventDefault();
+        if (loginInput === '888') {
+          setUserRole('admin');
+          setShowAdminLogin(false);
+          setLoginInput('');
+          setLoginError('');
+          showToast('管理員模式已啟動', 'success');
+        } else {
+          setLoginError('密碼錯誤，請重新輸入。');
+        }
+      };
+
+      const handleAddPatent = async () => {
+        if (userRole !== 'admin') return;
+        const currentMaxId = patents.length > 0 ? Math.max(...patents.map(p => p.id)) : 0;
+        
+        const newPatent = {
+          id: currentMaxId + 1,
+          ...(useLocalFallback ? { firebaseId: `local_${Date.now()}` } : {}), 
+          agency: '', department: '', inventors: '', region: '',
+          isUtility: false, isInvention: false, name: '', isCore: false, isBonus: false, notes: '',
+          applyDate: '', status: "", statusHistory: [], certDate: '', certNum: '', duration: '',
+          cellStyles: {},
+          createdAt: new Date().toISOString()
+        };
+        await saveData('patent_add', newPatent);
+        setSearchTerm('');
+        showToast('新案件已建立');
+      };
+
+      const handleAddInventor = async () => {
+        if (userRole !== 'admin') return;
+        const currentMaxId = inventorsData.length > 0 ? Math.max(...inventorsData.map(p => p.id)) : 0;
+        const newInv = {
+          id: currentMaxId + 1,
+          ...(useLocalFallback ? { firebaseId: `local_inv_${Date.now()}` } : {}), 
+          name: '', enName: '', idNumber: '', nationality: '台灣',
+          createdAt: new Date().toISOString()
+        };
+        await saveData('inventor_add', newInv);
+        setSearchInventorTerm('');
+        showToast('新發明人已建立');
+      };
+
+      const handleUpdateField = async (firebaseId, field, value) => {
+        if (userRole !== 'admin') return; 
+        await saveData('patent_update', { [field]: value }, firebaseId);
+      };
+
+      const handleUpdateInventorField = async (firebaseId, field, value) => {
+        if (userRole !== 'admin') return; 
+        await saveData('inventor_update', { [field]: value }, firebaseId);
+      };
+
+      const handleUpdateStyle = async (styleKey, value) => {
+          if (!activeCell || userRole !== 'admin') return;
+          const patent = patents.find(p => (p.firebaseId || p.id) === activeCell.id);
+          if (!patent) return;
+
+          const currentStyles = patent.cellStyles || {};
+          const fieldStyles = currentStyles[activeCell.field] || {};
+          const newFieldStyles = { ...fieldStyles, [styleKey]: value };
+
+          await saveData('patent_update', { cellStyles: { ...currentStyles, [activeCell.field]: newFieldStyles } }, activeCell.id);
+      };
+
+      const getStyle = (p, field) => {
+          const s = p.cellStyles?.[field] || {};
+          return {
+              color: s.color || 'inherit',
+              textAlign: s.align || 'left',
+              whiteSpace: s.wrap ? 'pre-wrap' : 'nowrap'
+          };
+      };
+
+      const handleStatusChange = async (patent, newStatus) => {
+        if (userRole !== 'admin' || patent.status === newStatus) return;
+        
+        const timestamp = new Date().toLocaleString('zh-TW', { hour12: false });
+        const newHistory = [...(patent.statusHistory || []), { status: newStatus, time: timestamp, note: "" }];
+        
+        await saveData('patent_update', { status: newStatus, statusHistory: newHistory }, patent.firebaseId || patent.id);
+      };
+
+      const handleDelete = async (firebaseId) => {
+        if (userRole !== 'admin') return;
+        setConfirmDialog({
+            msg: "確定要刪除此筆專利資料嗎？(此動作無法復原)",
+            onConfirm: async () => {
+                await saveData('patent_delete', null, firebaseId);
+                showToast('案件已刪除');
+            }
+        });
+      };
+
+      const handleDeleteInventor = async (firebaseId) => {
+        if (userRole !== 'admin') return;
+        setConfirmDialog({
+            msg: "確定要刪除此位發明人資料嗎？(此動作無法復原)",
+            onConfirm: async () => {
+                await saveData('inventor_delete', null, firebaseId);
+                showToast('發明人已刪除');
+            }
+        });
+      };
+
+      const handleSaveSettings = async (newList, newAgencies, newRegions, newSystemName, newLogo, newBg) => {
+        if (userRole !== 'admin') return;
+        await saveData('statuses', newList);
+        await saveData('ui_prefs', { 
+            chartColors: tempChartColors, chartTypes: tempChartTypes, visibleBlocks: tempVisibleBlocks,
+            dashboardOrder, agenciesList: newAgencies, regionsList: newRegions, visibleCols,
+            systemName: newSystemName, logoUrl: newLogo, bgUrl: newBg
+        });
+        setChartColors(tempChartColors);
+        setChartTypes(tempChartTypes);
+        setVisibleBlocks(tempVisibleBlocks);
+        
+        setAgenciesList(newAgencies);
+        setRegionsList(newRegions);
+        setSystemName(newSystemName);
+        setLogoUrl(newLogo);
+        setBgUrl(newBg);
+        showToast("系統設定已全面更新！");
+        setAdminModalOpen(false);
+      };
+
+      const handleImageUpload = (e, isLogo) => {
+          const file = e.target.files[0];
+          if(!file) return;
+          if(file.size > 800 * 1024) {
+              showToast("圖片過大！請選擇小於 800KB 的圖片。", "error");
+              return;
+          }
+          const reader = new FileReader();
+          reader.onload = (evt) => {
+              if(isLogo) window._tempLogo = evt.target.result;
+              else window._tempBg = evt.target.result;
+              const el = document.getElementById(isLogo ? 'logo-preview' : 'bg-preview');
+              if(el) { el.src = evt.target.result; el.style.display = 'block'; }
+          };
+          reader.readAsDataURL(file);
+      };
+
+      const toggleColumn = async (colKey) => {
+          let newCols;
+          if (visibleCols.includes(colKey)) newCols = visibleCols.filter(c => c !== colKey);
+          else newCols = [...visibleCols, colKey];
+          
+          setVisibleCols(newCols);
+          await saveData('ui_prefs', { chartColors, chartTypes, visibleBlocks, dashboardOrder, agenciesList, regionsList, visibleCols: newCols, systemName, logoUrl, bgUrl });
+      };
+
+      const handleColDragStart = (e, colKey) => {
+          if(userRole !== 'admin') return;
+          e.dataTransfer.setData('colKey', colKey);
+          e.dataTransfer.effectAllowed = 'move';
+      };
+      const handleColDragOver = (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; };
+      const handleColDrop = async (e, targetColKey) => {
+          e.preventDefault();
+          if(userRole !== 'admin') return;
+          const draggedColKey = e.dataTransfer.getData('colKey');
+          if (!draggedColKey || draggedColKey === targetColKey) return;
+
+          const newCols = [...visibleCols];
+          const dragIdx = newCols.indexOf(draggedColKey);
+          const targetIdx = newCols.indexOf(targetColKey);
+
+          newCols.splice(dragIdx, 1);
+          newCols.splice(targetIdx, 0, draggedColKey);
+
+          setVisibleCols(newCols);
+          await saveData('ui_prefs', { chartColors, chartTypes, visibleBlocks, dashboardOrder, agenciesList, regionsList, visibleCols: newCols, systemName, logoUrl, bgUrl });
+      };
+
+      const handleBlockDragStart = (e, id) => {
+          if(userRole !== 'admin') return;
+          e.dataTransfer.setData('blockId', id);
+          e.dataTransfer.effectAllowed = 'move';
+      };
+      const handleBlockDragOver = (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; };
+      const handleBlockDrop = async (e, targetId) => {
+          e.preventDefault();
+          if(userRole !== 'admin') return;
+          const draggedId = e.dataTransfer.getData('blockId');
+          if (draggedId === targetId || !draggedId) return;
+
+          const newOrder = [...dashboardOrder];
+          newOrder.splice(newOrder.indexOf(draggedId), 1);
+          newOrder.splice(newOrder.indexOf(targetId), 0, draggedId);
+
+          setDashboardOrder(newOrder);
+          await saveData('ui_prefs', { chartColors, chartTypes, visibleBlocks, dashboardOrder: newOrder, agenciesList, regionsList, visibleCols, systemName, logoUrl, bgUrl });
+      };
+
+      const handleImportExcel = async (e) => {
+        if (userRole !== 'admin') {
+            showToast("權限不足，僅管理員可執行匯入。", "error");
+            return;
+        }
+
+        const file = e.target.files[0];
+        if (!file) return;
+
+        if (fileInputRef.current) fileInputRef.current.value = '';
+
+        if (!window.XLSX) {
+            showToast("Excel 解析模組載入失敗，請確認網路連線。", "error");
+            return;
+        }
+
+        setConfirmDialog({
+            msg: `即將讀取 "${file.name}"。\n\n系統將自動往下尋找您的標題列，為您自動配對！\n💡 若資料表中有相同的「編號」或「專利名稱」，系統將會直接【覆蓋更新】該筆舊資料，否則將視為新案件新增。`,
+            onConfirm: () => {
+                setIsImporting(true);
+                const reader = new FileReader();
+                reader.onload = async (evt) => {
+                  try {
+                    const data = new Uint8Array(evt.target.result);
+                    const workbook = window.XLSX.read(data, {type: 'array'});
+                    const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+                    
+                    const rawData = window.XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "" });
+                    
+                    let headerRowIndex = -1;
+                    let maxMatches = 0;
+                    const keywords = ['編號', '名稱', '發明', '狀態', '部門', '事務所', '日期', '期間', '獎金'];
+                    
+                    for (let i = 0; i < Math.min(rawData.length, 50); i++) {
+                        if (!rawData[i]) continue;
+                        const rowStr = rawData[i].join('').replace(/\s+/g, '').toLowerCase();
+                        let matches = 0;
+                        keywords.forEach(kw => { if (rowStr.includes(kw)) matches++; });
+                        if (matches > maxMatches && matches >= 2) {
+                            maxMatches = matches;
+                            headerRowIndex = i;
+                        }
+                    }
+
+                    if (headerRowIndex === -1) {
+                        showToast("找不到標題列！請確認您的 Excel 包含「專利名稱」等標題。", "error");
+                        setIsImporting(false);
+                        return;
+                    }
+
+                    const headers = rawData[headerRowIndex].map(h => String(h).replace(/\s+/g, '').toLowerCase());
+                    const itemsToSave = [];
+                    let currentMaxId = patents.length > 0 ? Math.max(...patents.map(p => p.id)) : 0;
+
+                    for (let i = headerRowIndex + 1; i < rawData.length; i++) {
+                        const rowArr = rawData[i];
+                        if (!rowArr || rowArr.every(cell => cell === "" || cell === null || cell === undefined)) continue; 
+
+                        const getVal = (kws) => {
+                            const colIdx = headers.findIndex(h => kws.some(kw => h.includes(kw.replace(/\s+/g, '').toLowerCase())));
+                            return colIdx !== -1 && rowArr[colIdx] !== undefined && rowArr[colIdx] !== null ? String(rowArr[colIdx]).trim() : '';
+                        };
+                        const getBool = (kws) => {
+                            const val = getVal(kws).toLowerCase();
+                            return val === 'v' || val === 'true' || val === '1' || val === 'y' || val === 'yes';
+                        };
+
+                        const nameStr = getVal(['專利名稱', '名稱']);
+                        const agencyStr = getVal(['專利事務所', '事務所']);
+                        if (!nameStr && !agencyStr && !getVal(['發明人']) && !getVal(['狀態'])) continue;
+
+                        let rowId = parseInt(getVal(['編號', 'id', '序號']));
+                        let fbId = "";
+                        
+                        let existingPatent = null;
+                        if (!isNaN(rowId) && rowId > 0) {
+                            existingPatent = patents.find(p => p.id === rowId);
+                        }
+                        if (!existingPatent && nameStr) {
+                            existingPatent = patents.find(p => p.name === nameStr);
+                        }
+
+                        if (existingPatent) {
+                            rowId = existingPatent.id;
+                            fbId = existingPatent.firebaseId || existingPatent.id;
+                        } else {
+                            if (isNaN(rowId) || rowId <= 0) {
+                                currentMaxId++; 
+                                rowId = currentMaxId;
+                            } else {
+                                currentMaxId = Math.max(currentMaxId, rowId);
+                            }
+                            fbId = useLocalFallback ? `import_local_${rowId}_${Date.now()}` : `patent_${rowId}_${Date.now()}`;
+                        }
+
+                        const statusVal = getVal(['目前狀態', '狀態']);
+                        const finalStatus = statuses.includes(statusVal) ? statusVal : (statusVal || "");
+
+                        let finalStatusHistory = existingPatent?.statusHistory || [];
+                        if (!existingPatent || (existingPatent && existingPatent.status !== finalStatus && finalStatus)) {
+                            finalStatusHistory = [...finalStatusHistory, { status: finalStatus, time: new Date().toLocaleString('zh-TW', { hour12: false }), note: "Excel 匯入/更新" }];
+                        }
+
+                        itemsToSave.push({
+                          id: rowId,
+                          firebaseId: fbId,
+                          agency: agencyStr, department: getVal(['部門']), inventors: getVal(['發明人']), region: getVal(['國家', '國別', '地區']),
+                          isUtility: getBool(['新型']), isInvention: getBool(['發明']), name: nameStr, isCore: getBool(['核心技術', '核心']),
+                          isBonus: getBool(['申請獎金', '獎金']), notes: getVal(['備註']), applyDate: getVal(['申請日期', '申請日', '送件']),
+                          status: finalStatus, certDate: getVal(['證書日期', '證書日', '公告日期']), certNum: getVal(['專利證書號', '證書號', '公開號']), duration: getVal(['專利權期間', '專利期間', '期間']),
+                          statusHistory: finalStatusHistory,
+                          createdAt: existingPatent?.createdAt || new Date().toISOString()
+                        });
+                    }
+                    
+                    if (itemsToSave.length > 0) {
+                        await saveData('patent_import', itemsToSave);
+                        showToast(`🎊 智慧匯入成功！共覆蓋更新/新增了 ${itemsToSave.length} 筆專利資料。`);
+                    } else showToast("找不到有效的資料列，請確認資料內容。", "error");
+                
+                  } catch (err) {
+                    console.error(err);
+                    showToast("檔案解析失敗，請確認檔案為正確的 Excel 格式。", "error");
+                  } finally {
+                    setIsImporting(false);
+                  }
+                };
+                reader.readAsArrayBuffer(file);
+            }
+        });
+      };
+
+      const handleImportInventorExcel = async (e) => {
+        if (userRole !== 'admin') {
+            showToast("權限不足，僅管理員可執行匯入。", "error");
+            return;
+        }
+
+        const file = e.target.files[0];
+        if (!file) return;
+
+        if (inventorFileInputRef.current) inventorFileInputRef.current.value = '';
+
+        if (!window.XLSX) {
+            showToast("Excel 解析模組載入失敗，請確認網路連線。", "error");
+            return;
+        }
+
+        setConfirmDialog({
+            msg: `即將讀取 "${file.name}"。\n\n系統將自動分析「發明人」相關標題列並進行匯入/覆蓋！`,
+            onConfirm: () => {
+                setIsImporting(true);
+                const reader = new FileReader();
+                reader.onload = async (evt) => {
+                  try {
+                    const data = new Uint8Array(evt.target.result);
+                    const workbook = window.XLSX.read(data, {type: 'array'});
+                    const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+                    
+                    const rawData = window.XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "" });
+                    
+                    let headerRowIndex = -1;
+                    let maxMatches = 0;
+                    const keywords = ['編號', '姓名', '英文', '身分證', '國籍'];
+                    
+                    for (let i = 0; i < Math.min(rawData.length, 50); i++) {
+                        if (!rawData[i]) continue;
+                        const rowStr = rawData[i].join('').replace(/\s+/g, '').toLowerCase();
+                        let matches = 0;
+                        keywords.forEach(kw => { if (rowStr.includes(kw)) matches++; });
+                        if (matches > maxMatches && matches >= 2) {
+                            maxMatches = matches;
+                            headerRowIndex = i;
+                        }
+                    }
+
+                    if (headerRowIndex === -1) {
+                        showToast("找不到發明人標題列！請確認您的 Excel 包含「姓名」與「身分證號」等標題。", "error");
+                        setIsImporting(false);
+                        return;
+                    }
+
+                    const headers = rawData[headerRowIndex].map(h => String(h).replace(/\s+/g, '').toLowerCase());
+                    const itemsToSave = [];
+                    let currentMaxId = inventorsData.length > 0 ? Math.max(...inventorsData.map(p => p.id)) : 0;
+
+                    for (let i = headerRowIndex + 1; i < rawData.length; i++) {
+                        const rowArr = rawData[i];
+                        if (!rowArr || rowArr.every(cell => cell === "" || cell === null || cell === undefined)) continue; 
+
+                        const getVal = (kws) => {
+                            const colIdx = headers.findIndex(h => kws.some(kw => h.includes(kw.replace(/\s+/g, '').toLowerCase())));
+                            return colIdx !== -1 && rowArr[colIdx] !== undefined && rowArr[colIdx] !== null ? String(rowArr[colIdx]).trim() : '';
+                        };
+
+                        const nameStr = getVal(['姓名', '名字']);
+                        const idNumberStr = getVal(['身分證', '身份證']);
+                        if (!nameStr && !idNumberStr) continue;
+
+                        let rowId = parseInt(getVal(['編號', 'id', '序號']));
+                        let fbId = "";
+                        
+                        let existingData = null;
+                        if (!isNaN(rowId) && rowId > 0) {
+                            existingData = inventorsData.find(p => p.id === rowId);
+                        }
+                        if (!existingData && nameStr) {
+                            existingData = inventorsData.find(p => p.name === nameStr);
+                        }
+
+                        if (existingData) {
+                            rowId = existingData.id;
+                            fbId = existingData.firebaseId || existingData.id;
+                        } else {
+                            if (isNaN(rowId) || rowId <= 0) {
+                                currentMaxId++; 
+                                rowId = currentMaxId;
+                            } else {
+                                currentMaxId = Math.max(currentMaxId, rowId);
+                            }
+                            fbId = useLocalFallback ? `import_local_inv_${rowId}_${Date.now()}` : `inventor_${rowId}_${Date.now()}`;
+                        }
+
+                        itemsToSave.push({
+                          id: rowId,
+                          firebaseId: fbId,
+                          name: nameStr,
+                          enName: getVal(['英文']),
+                          idNumber: idNumberStr,
+                          nationality: getVal(['國籍']) || '台灣',
+                          createdAt: existingData?.createdAt || new Date().toISOString()
+                        });
+                    }
+                    
+                    if (itemsToSave.length > 0) {
+                        await saveData('inventor_import', itemsToSave);
+                        showToast(`🎊 發明人匯入成功！共處理了 ${itemsToSave.length} 筆資料。`);
+                    } else showToast("找不到有效的資料列，請確認資料內容。", "error");
+                
+                  } catch (err) {
+                    console.error(err);
+                    showToast("檔案解析失敗，請確認檔案格式正確。", "error");
+                  } finally {
+                    setIsImporting(false);
+                  }
+                };
+                reader.readAsArrayBuffer(file);
+            }
+        });
+      };
+
+      const handleExportExcel = () => {
+        const dataToExport = filteredPatents.map(p => ({
+            "編號": p.id, "專利事務所": p.agency, "部門單位": p.department, "發明人": p.inventors, "國別": p.region, 
+            "新型專利": p.isUtility ? "V" : "", "發明專利": p.isInvention ? "V" : "", "專利名稱": p.name, "專利核心技術": p.isCore ? "V" : "", 
+            "已申請獎金": p.isBonus ? "V" : "", "備註": p.notes, "送件智財局日期": p.applyDate, "目前狀態": p.status, 
+            "公告日期": p.certDate, "證書號/公開公告號": p.certNum, "專利權期間": p.duration
+        }));
+        const ws = window.XLSX.utils.json_to_sheet(dataToExport);
+        const wb = window.XLSX.utils.book_new();
+        window.XLSX.utils.book_append_sheet(wb, ws, "專利清單");
+        window.XLSX.writeFile(wb, `${systemName}_清單_${new Date().toISOString().slice(0,10)}.xlsx`);
+        showToast('清單已成功匯出');
+      };
+
+      const handleExportInventorExcel = () => {
+        const dataToExport = filteredInventors.map(p => ({
+            "編號": p.id, "姓名": p.name, "英文名字": p.enName, "身分證號": p.idNumber, "國籍": p.nationality
+        }));
+        const ws = window.XLSX.utils.json_to_sheet(dataToExport);
+        const wb = window.XLSX.utils.book_new();
+        window.XLSX.utils.book_append_sheet(wb, ws, "發明人清單");
+        window.XLSX.writeFile(wb, `${systemName}_發明人_${new Date().toISOString().slice(0,10)}.xlsx`);
+        showToast('發明人清單已成功匯出');
+      };
+
+      const filteredPatents = useMemo(() => {
+          if(!searchTerm) return patents;
+          const lowerTerm = searchTerm.toLowerCase();
+          return patents.filter(p => Object.values(p).some(val => String(val).toLowerCase().includes(lowerTerm)));
+      }, [patents, searchTerm]);
+
+      const filteredInventors = useMemo(() => {
+          if(!searchInventorTerm) return inventorsData;
+          const lowerTerm = searchInventorTerm.toLowerCase();
+          return inventorsData.filter(inv => Object.values(inv).some(val => String(val).toLowerCase().includes(lowerTerm)));
+      }, [inventorsData, searchInventorTerm]);
+
+      const stats = useMemo(() => {
+        const deptCounts = {}; 
+        const statusCounts = {}; 
+        const agencyCounts = {};
+        const acquiredCounts = { '總公司總計': { total: 0, invention: 0, utility: 0 } };
+
+        filteredPatents.forEach(p => {
+          const isAcquired = p.status && String(p.status).includes('已取得');
+
+          if (p.department) {
+             const depts = p.department.split(/[/\\、,]/).map(d => d.trim()).filter(d => d);
+             if (depts.length > 0) {
+                 const score = 1 / depts.length;
+                 depts.forEach(d => {
+                     deptCounts[d] = (deptCounts[d] || 0) + score;
+                     
+                     if (isAcquired) {
+                         if (!acquiredCounts[d]) acquiredCounts[d] = { total: 0, invention: 0, utility: 0 };
+                         acquiredCounts[d].total += score;
+                         acquiredCounts['總公司總計'].total += score;
+                         if (p.isInvention) {
+                             acquiredCounts[d].invention += score;
+                             acquiredCounts['總公司總計'].invention += score;
+                         }
+                         if (p.isUtility) {
+                             acquiredCounts[d].utility += score;
+                             acquiredCounts['總公司總計'].utility += score;
+                         }
+                     }
+                 });
+             }
+          }
+          if (p.status) statusCounts[p.status] = (statusCounts[p.status] || 0) + 1;
+          if (p.agency) agencyCounts[p.agency] = (agencyCounts[p.agency] || 0) + 1;
+        });
+
+        return { deptCounts, statusCounts, agencyCounts, acquiredCounts };
+      }, [filteredPatents]);
+
+      if (loading) return <div className="min-h-screen flex items-center justify-center bg-slate-50 text-slate-500 font-medium">系統核心載入中，請稍候...</div>;
+
+      const renderDashboardBlock = (blockId) => {
+         if (!visibleBlocks.includes(blockId)) return null;
+
+         if (blockId === 'dept') return <div key="dept" className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start"><SingleDatasetChart data={stats.deptCounts} title="1. 部門申請量統計" iconName="BarChart" blockId="dept" chartType={chartTypes.dept} baseColor={chartColors.dept} handleDragStart={handleBlockDragStart} handleDrop={handleBlockDrop} handleDragOver={handleBlockDragOver}/><div><StatsTable data={stats.deptCounts} headCol1="部門名稱" headCol2="專利件數" /></div></div>;
+         
+         if (blockId === 'status') return <div key="status" className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start"><SingleDatasetChart data={stats.statusCounts} title="2. 專利目前狀態進度" iconName="Activity" blockId="status" sortOrder={statuses} chartType={chartTypes.status} baseColor={chartColors.status} handleDragStart={handleBlockDragStart} handleDrop={handleBlockDrop} handleDragOver={handleBlockDragOver}/><div><StatsTable data={stats.statusCounts} headCol1="進度狀態" headCol2="案件數" /></div></div>;
+         
+         if (blockId === 'agency') return <div key="agency" className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start"><SingleDatasetChart data={stats.agencyCounts} title="3. 事務所接案量分佈" iconName="Building2" blockId="agency" chartType={chartTypes.agency} baseColor={chartColors.agency} handleDragStart={handleBlockDragStart} handleDrop={handleBlockDrop} handleDragOver={handleBlockDragOver}/><div><StatsTable data={stats.agencyCounts} headCol1="事務所名稱" headCol2="委託件數" /></div></div>;
+         
+         if (blockId === 'acquired') return <div key="acquired" className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start"><AcquiredBarChart data={stats.acquiredCounts} title="4. 已取得專利綜合戰力" iconName="Award" blockId="acquired" chartType={chartTypes.acquired} colors={chartColors} handleDragStart={handleBlockDragStart} handleDrop={handleBlockDrop} handleDragOver={handleBlockDragOver}/><div><AcquiredStatsTable data={stats.acquiredCounts} /></div></div>;
+         return null;
+      };
+
+      return (
+        <div className="min-h-screen text-slate-800 font-sans flex flex-col transition-all duration-500 relative" 
+             style={{ 
+                backgroundColor: bgUrl ? 'transparent' : '#f8fafc',
+                backgroundImage: bgUrl ? `url(${bgUrl})` : 'none', 
+                backgroundSize: 'cover', backgroundPosition: 'center', backgroundAttachment: 'fixed'
+             }}>
+          
+          {/* Toast 提示組件 */}
+          {toastMsg && (
+            <div className={`fixed bottom-6 right-6 z-[100] px-4 py-3 rounded-lg shadow-xl font-bold flex items-center gap-2 toast-animate ${toastMsg.type === 'error' ? 'bg-red-500 text-white' : 'bg-emerald-600 text-white'}`}>
+                {toastMsg.type === 'error' ? <Icon name="AlertCircle" className="w-5 h-5"/> : <Icon name="CheckSquare" className="w-5 h-5"/>}
+                {toastMsg.msg}
+            </div>
+          )}
+
+          {/* Custom Confirm Modal 組件 */}
+          {confirmDialog && (
+            <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+              <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden animate-in zoom-in-95 duration-200">
+                <div className="p-6">
+                  <h3 className="font-bold text-slate-800 text-lg mb-4 flex items-center gap-2">
+                     <Icon name="AlertCircle" className="w-6 h-6 text-blue-600" /> 系統確認
+                  </h3>
+                  <p className="text-slate-600 text-sm whitespace-pre-wrap leading-relaxed">{confirmDialog.msg}</p>
+                </div>
+                <div className="bg-slate-50 px-6 py-4 flex justify-end gap-3 border-t border-slate-100">
+                   <button onClick={() => { setConfirmDialog(null); if(confirmDialog.onCancel) confirmDialog.onCancel(); }} className="px-4 py-2 bg-white border border-slate-300 rounded-lg text-slate-700 font-bold hover:bg-slate-100 transition-colors">取消</button>
+                   <button onClick={() => { confirmDialog.onConfirm(); setConfirmDialog(null); }} className="px-4 py-2 bg-blue-600 rounded-lg text-white font-bold hover:bg-blue-700 transition-colors shadow-sm">確定執行</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {bgUrl && <div className="fixed inset-0 bg-slate-50/70 backdrop-blur-[2px] z-[-1]"></div>}
+
+          <datalist id="agency-list">{agenciesList.map(a => <option key={`dl_agency_${a}`} value={a} />)}</datalist>
+          <datalist id="region-list">{regionsList.map(r => <option key={`dl_region_${r}`} value={r} />)}</datalist>
+
+          <header className="bg-white/95 backdrop-blur border-b border-slate-200 sticky top-0 z-30 shadow-sm shrink-0">
+            <div className="max-w-[1600px] mx-auto px-4 h-16 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                {logoUrl ? (
+                    <img src={logoUrl} alt="Logo" className="h-8 max-w-[120px] object-contain" />
+                ) : (
+                    <div className="bg-blue-900 p-2 rounded-lg shadow-sm">
+                      <Icon name="Building2" className="w-5 h-5 text-white" />
+                    </div>
+                )}
+                <h1 className="text-xl font-bold text-slate-800 tracking-tight hidden sm:block">{systemName} {useLocalFallback && <span className="text-xs text-orange-500 ml-2 font-normal">(本機暫存模式)</span>}</h1>
+                <span className={`ml-3 px-2.5 py-1 text-xs font-bold rounded-md border hidden md:inline-block ${userRole === 'admin' ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-slate-100 text-slate-600 border-slate-200'}`}>
+                  {userRole === 'admin' ? '🛡️ 管理員模式' : '👀 檢視模式'}
+                </span>
+              </div>
+              
+              <div className="flex items-center gap-2 md:gap-4 overflow-x-auto hide-scrollbar shrink-0">
+                <button onClick={() => setActiveTab('dashboard')} className={`px-3 py-2 rounded-md text-sm font-bold transition-colors whitespace-nowrap flex items-center gap-1 ${activeTab === 'dashboard' ? 'bg-blue-50 text-blue-900' : 'text-slate-600 hover:bg-slate-100'}`}>
+                  <Icon name="BarChart" className="w-4 h-4" /> 儀表板
+                </button>
+                <button onClick={() => setActiveTab('grid')} className={`px-3 py-2 rounded-md text-sm font-bold transition-colors whitespace-nowrap flex items-center gap-1 ${activeTab === 'grid' ? 'bg-blue-50 text-blue-900' : 'text-slate-600 hover:bg-slate-100'}`}>
+                  <Icon name="Save" className="w-4 h-4" /> 專利清單
+                </button>
+                <button onClick={() => setActiveTab('inventors')} className={`px-3 py-2 rounded-md text-sm font-bold transition-colors whitespace-nowrap flex items-center gap-1 ${activeTab === 'inventors' ? 'bg-blue-50 text-blue-900' : 'text-slate-600 hover:bg-slate-100'}`}>
+                  <Icon name="Users" className="w-4 h-4" /> 發明人資訊
+                </button>
+                
+                <div className="w-px h-6 bg-slate-200 mx-1 md:mx-2 hidden sm:block"></div>
+                
+                {userRole === 'admin' ? (
+                  <React.Fragment>
+                    <button onClick={() => setAdminModalOpen(true)} className="flex items-center gap-1 text-slate-600 hover:text-blue-800 text-sm font-medium px-2 whitespace-nowrap hidden sm:flex">
+                      <Icon name="Settings" className="w-4 h-4" /> 後台設定
+                    </button>
+                    <button onClick={() => { setConfirmDialog({msg: '確定退出管理員嗎？', onConfirm: () => { setUserRole('viewer'); setActiveTab('dashboard'); }}) }} className="flex items-center gap-1 text-red-500 hover:text-red-700 text-sm font-bold px-2 ml-1 bg-red-50 hover:bg-red-100 rounded py-1 transition-colors whitespace-nowrap">
+                      登出
+                    </button>
+                  </React.Fragment>
+                ) : (
+                  <button onClick={() => { setShowAdminLogin(true); setLoginInput(''); setLoginError(''); }} className="flex items-center gap-1 text-slate-500 hover:text-blue-700 text-sm font-bold px-2 ml-1 bg-slate-100 hover:bg-blue-50 rounded py-1 transition-colors whitespace-nowrap">
+                    <Icon name="Lock" className="w-4 h-4" /> 登入
+                  </button>
+                )}
+              </div>
+            </div>
+          </header>
+
+          <main className="max-w-[1600px] mx-auto p-4 lg:p-6 pb-24 flex-1 w-full relative overflow-x-hidden">
+            
+            {/* =======================
+                分頁：儀表板 
+            ======================= */}
+            {activeTab === 'dashboard' ? (
+              <div className="space-y-8 animate-in fade-in duration-300">
+                <div className="flex justify-between items-center bg-white/95 backdrop-blur p-4 rounded-xl shadow-sm border border-slate-200">
+                   <div className="flex items-center bg-slate-100 rounded-lg px-3 py-1.5 border border-slate-200 w-1/3">
+                      <Icon name="Search" className="w-4 h-4 text-slate-400 mr-2" />
+                      <input type="text" placeholder="輸入關鍵字篩選圖表數據..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="bg-transparent border-none outline-none text-sm w-full text-slate-700 font-bold" />
+                   </div>
+                   {userRole === 'admin' && <p className="text-xs text-slate-400 font-bold mb-2 hidden sm:block">💡 提示：按住圖表標題區塊的圓點符號即可上下拖曳排序</p>}
+                </div>
+                {dashboardOrder.map(blockId => renderDashboardBlock(blockId))}
+                
+                {userRole === 'admin' && DEFAULT_VISIBLE_BLOCKS.filter(b => !visibleBlocks.includes(b)).length > 0 && (
+                   <div className="flex justify-center mt-8">
+                       <button onClick={() => setAdminModalOpen(true)} className="flex items-center gap-2 px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold text-sm rounded-full transition-colors">
+                           <Icon name="Plus" className="w-4 h-4" /> 有部分圖表被隱藏，點此前往設定開啟
+                       </button>
+                   </div>
+                )}
+              </div>
+            ) : null}
+
+            {/* =======================
+                分頁：專利清單編輯區 
+            ======================= */}
+            {activeTab === 'grid' ? (
+              <div className="bg-white/95 backdrop-blur border border-slate-200 rounded-xl shadow-sm flex flex-col h-[80vh] animate-in fade-in duration-300" id="printable-grid">
+                {/* 1. 主工具列 */}
+                <div className="p-3 border-b border-slate-200 flex justify-between items-center bg-slate-100/90 rounded-t-xl shrink-0 overflow-x-auto">
+                  <div className="flex gap-2 min-w-max">
+                    {userRole === 'admin' ? (
+                      <React.Fragment>
+                        <button onClick={() => showToast('系統已啟用自動即時儲存功能，變更已在背景存檔！')} className="flex items-center gap-1 bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 px-4 py-2 rounded text-sm font-bold shadow-sm transition-colors">
+                          <Icon name="Save" className="w-4 h-4 text-emerald-600" /> 儲存修改
+                        </button>
+                        <button onClick={() => { setConfirmDialog({ msg: '確定要放棄修改並重新載入嗎？', onConfirm: () => window.location.reload() }); }} className="flex items-center gap-1 bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 px-4 py-2 rounded text-sm font-bold shadow-sm transition-colors">
+                          <Icon name="X" className="w-4 h-4 text-red-500" /> 放棄修改
+                        </button>
+                      </React.Fragment>
+                    ) : (
+                      <span className="text-sm font-medium text-slate-500 py-2 px-2 flex items-center gap-1">
+                        <Icon name="Lock" className="w-4 h-4" /> 檢視模式：無法編輯
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex gap-2 min-w-max">
+                    {userRole === 'admin' && (
+                        <div className="flex items-center gap-1">
+                          <button 
+                            onClick={() => fileInputRef.current && fileInputRef.current.click()}
+                            className={`flex items-center gap-1 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 text-emerald-700 px-3 py-2 rounded text-sm font-bold transition-colors shadow-sm cursor-pointer mb-0 ${isImporting ? 'opacity-50 pointer-events-none' : ''}`}
+                          >
+                            {isImporting ? <Icon name="Activity" className="w-4 h-4 animate-spin" /> : <Icon name="Upload" className="w-4 h-4 text-emerald-600" />}
+                            匯入 EXCEL
+                          </button>
+                          <input type="file" ref={fileInputRef} accept=".xlsx, .xls, .csv" className="hidden" onChange={handleImportExcel} />
+                        </div>
+                    )}
+                    <button onClick={handleExportExcel} className="flex items-center gap-1 bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 px-3 py-2 rounded text-sm font-bold transition-colors shadow-sm">
+                      <Icon name="Download" className="w-4 h-4 text-emerald-600" /> 匯出 EXCEL
+                    </button>
+                    {userRole === 'admin' && (
+                      <button onClick={handleAddPatent} className="flex items-center gap-1 bg-blue-900 hover:bg-blue-950 text-white px-4 py-2 rounded text-sm font-bold shadow-sm transition-colors ml-2">
+                        <Icon name="Plus" className="w-4 h-4" /> 新增一筆
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* 2. 文字排版與篩選工具列 */}
+                <div className="p-2 border-b border-slate-200 flex items-center gap-2 bg-white/50 shrink-0 text-slate-600 overflow-x-auto">
+                    <div className="flex items-center bg-slate-100 rounded px-2 py-1 border border-slate-200 w-64 shrink-0">
+                      <Icon name="Search" className="w-4 h-4 text-slate-400 mr-1" />
+                      <input type="text" placeholder="搜尋專利資料..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="bg-transparent border-none outline-none text-sm w-full font-medium" />
+                    </div>
+                    
+                    <div className="w-px h-5 bg-slate-200 mx-1 shrink-0"></div>
+                    
+                    {userRole === 'admin' && (
+                        <div className="flex items-center gap-1 shrink-0">
+                            <button onMouseDown={(e) => { e.preventDefault(); handleUpdateStyle('align', 'left'); }} className="p-1.5 hover:bg-slate-100 rounded border border-transparent hover:border-slate-200"><Icon name="AlignLeft" className="w-4 h-4" /></button>
+                            <button onMouseDown={(e) => { e.preventDefault(); handleUpdateStyle('align', 'center'); }} className="p-1.5 hover:bg-slate-100 rounded border border-transparent hover:border-slate-200" title="置中對齊"><Icon name="AlignCenter" className="w-4 h-4" /></button>
+                            <button onMouseDown={(e) => { e.preventDefault(); handleUpdateStyle('align', 'right'); }} className="p-1.5 hover:bg-slate-100 rounded border border-transparent hover:border-slate-200"><Icon name="AlignRight" className="w-4 h-4" /></button>
+                            
+                            <div className="w-px h-5 bg-slate-200 mx-1"></div>
+
+                            <button onMouseDown={(e) => { 
+                                e.preventDefault(); 
+                                if(activeCell){
+                                    const p = patents.find(x => (x.firebaseId || x.id) === activeCell.id);
+                                    handleUpdateStyle('wrap', !(p?.cellStyles?.[activeCell.field]?.wrap));
+                                }
+                            }} className="p-1.5 hover:bg-slate-100 rounded border border-transparent hover:border-slate-200 flex items-center gap-1 text-sm font-bold" title="切換自動換行">
+                                <Icon name="WrapText" className="w-4 h-4 text-blue-600" /> 自動換行
+                            </button>
+
+                            <div className="w-px h-5 bg-slate-200 mx-1"></div>
+                            
+                            <label className="flex items-center gap-1 p-1 hover:bg-slate-100 rounded border border-transparent hover:border-slate-200 cursor-pointer text-sm font-bold">
+                                <Icon name="Palette" className="w-4 h-4 text-red-500" /> 文字色
+                                <input type="color" className="w-5 h-5 cursor-pointer opacity-0 absolute" onChange={(e) => handleUpdateStyle('color', e.target.value)} />
+                            </label>
+                        </div>
+                    )}
+
+                    <div className="flex-1 min-w-[20px]"></div>
+
+                    <div className="relative shrink-0">
+                        <button onClick={() => setShowColPicker(!showColPicker)} className="flex items-center gap-1 px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-50 rounded text-sm font-bold shadow-sm transition-colors">
+                            <Icon name="Columns" className="w-4 h-4" /> 顯示/隱藏欄位
+                        </button>
+                        {showColPicker && (
+                            <div className="absolute right-0 top-full mt-2 bg-white border border-slate-200 shadow-xl rounded-lg p-4 z-50 w-80 grid grid-cols-2 gap-y-3 gap-x-2">
+                                {COLUMNS_DEF.map(c => (
+                                    <label key={`col_${c.key}`} className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer hover:bg-slate-50 p-1 rounded">
+                                        <input type="checkbox" checked={visibleCols.includes(c.key)} onChange={() => toggleColumn(c.key)} disabled={c.alwaysVisible} className="w-4 h-4 accent-blue-600 cursor-pointer" />
+                                        {c.label}
+                                    </label>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+                <div className="flex-1 overflow-auto relative excel-grid block">
+                  <table className="w-full text-left border-collapse min-w-max" onClick={() => setShowColPicker(false)}>
+                    <thead className="bg-slate-100/90 sticky top-0 z-20 shadow-sm text-xs text-slate-700 uppercase font-bold tracking-wider whitespace-nowrap">
+                      <tr>
+                        {visibleCols.map(colKey => {
+                          const colDef = COLUMNS_DEF.find(c => c.key === colKey);
+                          if (!colDef) return null;
+                          return (
+                            <th key={`th_${colKey}`} 
+                                onDragOver={handleColDragOver} 
+                                onDrop={(e) => handleColDrop(e, colKey)}
+                                className={`p-0 border-b border-r border-slate-300 bg-slate-100/90 backdrop-blur ${colKey === 'id' ? 'sticky left-0 z-30' : 'z-20'}`}>
+                               <div style={{ resize: 'horizontal', overflow: 'hidden', minWidth: colDef.minWidth }} className="flex flex-col h-full hover:bg-slate-200/30 transition-colors p-2 relative">
+                                   <div className="flex items-center justify-between w-full h-full gap-2">
+                                      <div className="flex items-center gap-1 w-full">
+                                          {userRole === 'admin' && colKey !== 'id' && (
+                                             <div draggable onDragStart={(e) => handleColDragStart(e, colKey)} className="cursor-grab hover:text-blue-500 text-slate-400 p-1 rounded hover:bg-slate-200 transition-colors">
+                                                 <Icon name="Menu" className="w-4 h-4" title="按住拖曳以排序欄位" />
+                                             </div>
+                                          )}
+                                          <span className="text-center w-full">{colDef.label}</span>
+                                      </div>
+                                   </div>
+                               </div>
+                            </th>
+                          )
+                        })}
+                        {userRole === 'admin' ? <th className="p-2 border-b border-slate-300 w-16 text-center print-hide">操作</th> : null}
+                      </tr>
+                    </thead>
+                    <tbody className="text-sm align-top bg-white/50">
+                      {filteredPatents.length === 0 ? (
+                        <tr><td colSpan="18" className="text-center p-8 text-slate-400">目前尚無專利資料</td></tr>
+                      ) : null}
+                      {filteredPatents.map((p, idx) => {
+                        const pid = p.firebaseId || p.id;
+                        return (
+                        <tr key={pid} className={`group border-b border-slate-200 transition-colors ${userRole === 'admin' ? 'hover:bg-blue-50/60' : 'hover:bg-slate-50'}`}>
+                          
+                          {visibleCols.map(colKey => {
+                             switch(colKey) {
+                                case 'id':
+                                  return (
+                                    <td key={colKey} className={`p-2 border-r border-slate-200 text-center font-bold text-slate-600 sticky left-0 z-10 align-middle transition-colors ${userRole === 'admin' ? 'bg-white group-hover:bg-blue-50/60' : 'bg-white group-hover:bg-slate-50'}`}>
+                                      {p.id}
+                                    </td>
+                                  );
+                                case 'department':
+                                  return (
+                                    <td key={colKey} className="p-0 border-r border-slate-200 align-top bg-blue-50/20">
+                                      <textarea value={p.department || ''} onChange={(e) => handleUpdateField(pid, 'department', e.target.value)} disabled={userRole !== 'admin'}
+                                        onFocus={() => setActiveCell({id: pid, field: 'department'})} style={getStyle(p, 'department')} placeholder={userRole === 'admin' ? "例: 機構部/研發部" : ""}
+                                        className={`w-full h-full p-2 bg-transparent outline-none resizable-cell leading-snug ${userRole === 'admin' ? 'focus:bg-blue-100 focus:ring-1 ring-blue-500' : 'cursor-default text-slate-600'}`} />
+                                    </td>
+                                  );
+                                case 'inventors':
+                                  return (
+                                    <td key={colKey} className="p-0 border-r border-slate-200 align-top">
+                                      <textarea value={p.inventors || ''} onChange={(e) => handleUpdateField(pid, 'inventors', e.target.value)} disabled={userRole !== 'admin'}
+                                        onFocus={() => setActiveCell({id: pid, field: 'inventors'})} style={getStyle(p, 'inventors')}
+                                        className={`w-full h-full p-2 bg-transparent outline-none resizable-cell leading-snug ${userRole === 'admin' ? 'focus:bg-blue-50 focus:ring-1 ring-blue-500' : 'cursor-default text-slate-600'}`} />
+                                    </td>
+                                  );
+                                case 'agency':
+                                  return (
+                                    <td key={colKey} className="p-0 border-r border-slate-200 bg-white group-hover:bg-transparent relative">
+                                      <textarea value={p.agency || ''} onChange={(e) => handleUpdateField(pid, 'agency', e.target.value)} disabled={userRole !== 'admin'}
+                                        onFocus={() => setActiveCell({id: pid, field: 'agency'})} style={getStyle(p, 'agency')}
+                                        className={`w-full h-full p-2 bg-transparent outline-none resizable-cell ${userRole === 'admin' ? 'focus:bg-blue-50 focus:ring-1 ring-blue-500 cursor-text text-slate-700' : 'cursor-default text-slate-600'}`}
+                                      />
+                                      {userRole === 'admin' && <input list="agency-list" value={p.agency || ''} onChange={(e) => handleUpdateField(pid, 'agency', e.target.value)} className="absolute opacity-0 w-4 h-4 right-1 bottom-1 cursor-pointer z-10" />}
+                                    </td>
+                                  );
+                                case 'isUtility':
+                                  return (
+                                    <td key={colKey} className="p-2 border-r border-slate-200 text-center align-middle">
+                                      <input type="checkbox" checked={!!p.isUtility} onChange={(e) => handleUpdateField(pid, 'isUtility', e.target.checked)} className={`w-5 h-5 accent-blue-600 rounded ${userRole === 'admin' ? 'cursor-pointer' : 'pointer-events-none'}`} />
+                                    </td>
+                                  );
+                                case 'isInvention':
+                                  return (
+                                    <td key={colKey} className="p-2 border-r border-slate-200 text-center align-middle">
+                                      <input type="checkbox" checked={!!p.isInvention} onChange={(e) => handleUpdateField(pid, 'isInvention', e.target.checked)} className={`w-5 h-5 accent-blue-600 rounded ${userRole === 'admin' ? 'cursor-pointer' : 'pointer-events-none'}`} />
+                                    </td>
+                                  );
+                                case 'region':
+                                  return (
+                                    <td key={colKey} className="p-0 border-r border-slate-200 bg-white group-hover:bg-transparent relative">
+                                      <textarea value={p.region || ''} onChange={(e) => handleUpdateField(pid, 'region', e.target.value)} disabled={userRole !== 'admin'}
+                                        onFocus={() => setActiveCell({id: pid, field: 'region'})} style={getStyle(p, 'region')}
+                                        className={`w-full h-full p-2 bg-transparent outline-none resizable-cell ${userRole === 'admin' ? 'focus:bg-blue-50 focus:ring-1 ring-blue-500 cursor-text text-slate-700' : 'cursor-default text-slate-600'}`}
+                                      />
+                                      {userRole === 'admin' && <input list="region-list" value={p.region || ''} onChange={(e) => handleUpdateField(pid, 'region', e.target.value)} className="absolute opacity-0 w-4 h-4 right-1 bottom-1 cursor-pointer z-10" />}
+                                    </td>
+                                  );
+                                case 'name':
+                                  return (
+                                    <td key={colKey} className="p-0 border-r border-slate-200 align-top">
+                                      <textarea value={p.name || ''} onChange={(e) => handleUpdateField(pid, 'name', e.target.value)} disabled={userRole !== 'admin'}
+                                        onFocus={() => setActiveCell({id: pid, field: 'name'})} style={getStyle(p, 'name')}
+                                        className={`w-full h-full p-2 bg-transparent outline-none font-bold resizable-cell leading-snug ${userRole === 'admin' ? 'focus:bg-blue-50 focus:ring-1 ring-blue-500 text-slate-800' : 'cursor-default text-slate-700'}`} />
+                                    </td>
+                                  );
+                                case 'status':
+                                  return (
+                                    <td key={colKey} className="p-0 border-r border-slate-200 bg-yellow-50/40 relative">
+                                      <select value={p.status || ''} 
+                                        onChange={(e) => handleStatusChange(p, e.target.value)} 
+                                        disabled={userRole !== 'admin'}
+                                        onFocus={() => setActiveCell({id: pid, field: 'status'})} style={getStyle(p, 'status')}
+                                        className={`w-full h-full p-2 bg-transparent outline-none text-sm font-bold text-blue-900 resizable-cell ${userRole === 'admin' ? 'cursor-pointer focus:bg-yellow-100 focus:ring-1 ring-yellow-500' : 'cursor-default appearance-none'}`}
+                                      >
+                                        <option value="">--請選擇--</option>
+                                        {(!statuses.includes(p.status) && p.status) ? <option value={p.status}>{p.status}</option> : null}
+                                        {statuses.map(s => <option key={`status_${s}`} value={s}>{s}</option>)}
+                                      </select>
+                                    </td>
+                                  );
+                                case 'history':
+                                  return (
+                                    <td key={colKey} className="p-2 border-r border-slate-200 text-center align-middle print-hide">
+                                      <button onClick={() => setActiveHistoryPatentId(pid)} className="text-slate-400 hover:text-blue-800 p-1 rounded-md hover:bg-blue-100 transition-colors" title="查看與編輯時間軸">
+                                        <Icon name="Clock" className="w-5 h-5 mx-auto" />
+                                      </button>
+                                    </td>
+                                  );
+                                case 'isCore':
+                                  return (
+                                    <td key={colKey} className="p-2 border-r border-slate-200 text-center align-middle">
+                                      <input type="checkbox" checked={!!p.isCore} onChange={(e) => handleUpdateField(pid, 'isCore', e.target.checked)} className={`w-5 h-5 accent-blue-600 rounded ${userRole === 'admin' ? 'cursor-pointer' : 'pointer-events-none'}`} />
+                                    </td>
+                                  );
+                                case 'isBonus':
+                                  return (
+                                    <td key={colKey} className="p-2 border-r border-slate-200 text-center align-middle bg-orange-50/30">
+                                      <input type="checkbox" checked={!!p.isBonus} onChange={(e) => handleUpdateField(pid, 'isBonus', e.target.checked)} className={`w-5 h-5 accent-orange-500 rounded ${userRole === 'admin' ? 'cursor-pointer' : 'pointer-events-none'}`} />
+                                    </td>
+                                  );
+                                case 'notes':
+                                  return (
+                                    <td key={colKey} className="p-0 border-r border-slate-200 align-top">
+                                      <textarea value={p.notes || ''} onChange={(e) => handleUpdateField(pid, 'notes', e.target.value)} disabled={userRole !== 'admin'}
+                                        onFocus={() => setActiveCell({id: pid, field: 'notes'})} style={getStyle(p, 'notes')} placeholder={userRole === 'admin' ? "輸入備註..." : ""}
+                                        className={`w-full h-full p-2 bg-transparent outline-none resizable-cell leading-snug ${userRole === 'admin' ? 'focus:bg-orange-50 focus:ring-1 ring-orange-400' : 'cursor-default text-slate-600'}`} />
+                                    </td>
+                                  );
+                                case 'applyDate':
+                                  return (
+                                    <td key={colKey} className="p-0 border-r border-slate-200 align-top">
+                                      <input type="date" value={p.applyDate || ''} onChange={(e) => handleUpdateField(pid, 'applyDate', e.target.value)} disabled={userRole !== 'admin'}
+                                        onFocus={() => setActiveCell({id: pid, field: 'applyDate'})} style={getStyle(p, 'applyDate')}
+                                        className={`w-full h-full p-2 bg-transparent outline-none text-sm resizable-cell ${userRole === 'admin' ? 'cursor-text' : 'cursor-default text-slate-600'}`} />
+                                    </td>
+                                  );
+                                case 'certDate':
+                                  return (
+                                    <td key={colKey} className="p-0 border-r border-slate-200 align-top">
+                                      <input type="date" value={p.certDate || ''} onChange={(e) => handleUpdateField(pid, 'certDate', e.target.value)} disabled={userRole !== 'admin'}
+                                        onFocus={() => setActiveCell({id: pid, field: 'certDate'})} style={getStyle(p, 'certDate')}
+                                        className={`w-full h-full p-2 bg-transparent outline-none text-sm resizable-cell ${userRole === 'admin' ? 'cursor-text' : 'cursor-default text-slate-600'}`} />
+                                    </td>
+                                  );
+                                case 'certNum':
+                                  return (
+                                    <td key={colKey} className="p-0 border-r border-slate-200 align-top">
+                                      <textarea value={p.certNum || ''} onChange={(e) => handleUpdateField(pid, 'certNum', e.target.value)} disabled={userRole !== 'admin'}
+                                        onFocus={() => setActiveCell({id: pid, field: 'certNum'})} style={getStyle(p, 'certNum')}
+                                        className={`w-full h-full p-2 bg-transparent outline-none text-sm font-mono resizable-cell ${userRole === 'admin' ? 'focus:bg-blue-50 focus:ring-1 ring-blue-500' : 'cursor-default text-slate-600'}`} />
+                                    </td>
+                                  );
+                                case 'duration':
+                                  return (
+                                    <td key={colKey} className="p-0 border-r border-slate-200 align-top">
+                                      <textarea value={p.duration || ''} onChange={(e) => handleUpdateField(pid, 'duration', e.target.value)} disabled={userRole !== 'admin'}
+                                        onFocus={() => setActiveCell({id: pid, field: 'duration'})} style={getStyle(p, 'duration')}
+                                        placeholder={userRole === 'admin' ? "例: 2023/5/11~2032/12/13" : ""}
+                                        className={`w-full h-full p-2 bg-transparent outline-none text-xs resizable-cell leading-snug ${userRole === 'admin' ? 'focus:bg-blue-50 focus:ring-1 ring-blue-500 text-slate-700' : 'cursor-default text-slate-500'}`} />
+                                    </td>
+                                  );
+                                default: 
+                                  return null;
+                             }
+                          })}
+                          
+                          {userRole === 'admin' ? (
+                            <td className="p-2 text-center bg-white group-hover:bg-blue-50/60 transition-colors align-middle print-hide">
+                              <button onClick={() => handleDelete(pid)} className="text-slate-300 hover:text-red-600 transition-colors" title="刪除案件">
+                                <Icon name="X" className="w-5 h-5 mx-auto" />
+                              </button>
+                            </td>
+                          ) : null}
+                        </tr>
+                      )})}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="p-2 bg-slate-100/90 border-t border-slate-200 text-xs font-medium text-slate-600 flex justify-between rounded-b-xl shrink-0 print-hide">
+                  <span>篩選顯示： {filteredPatents.length} 筆案件 / 總計： {patents.length} 筆</span>
+                  <span className="flex items-center gap-1"><Icon name="Save" className="w-3 h-3 text-emerald-600"/> {userRole === 'admin' ? (useLocalFallback ? '本機暫存模式' : '自動儲存啟用中') : '唯讀模式'}</span>
+                </div>
+              </div>
+            ) : null}
+
+            {/* =======================
+                分頁：發明人資訊 (全新模組)
+            ======================= */}
+            {activeTab === 'inventors' ? (
+              <div className="bg-white/95 backdrop-blur border border-slate-200 rounded-xl shadow-sm flex flex-col h-[80vh] animate-in fade-in duration-300">
+                {/* 1. 工具列 */}
+                <div className="p-3 border-b border-slate-200 flex justify-between items-center bg-slate-100/90 rounded-t-xl shrink-0 overflow-x-auto">
+                  <div className="flex gap-2 min-w-max">
+                    {userRole === 'admin' ? (
+                      <React.Fragment>
+                        <button onClick={() => showToast('系統已啟用自動即時儲存功能，變更已在背景存檔！')} className="flex items-center gap-1 bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 px-4 py-2 rounded text-sm font-bold shadow-sm transition-colors">
+                          <Icon name="Save" className="w-4 h-4 text-emerald-600" /> 儲存修改
+                        </button>
+                        <button onClick={() => { setConfirmDialog({ msg: '確定要放棄修改並重新載入嗎？', onConfirm: () => window.location.reload() }); }} className="flex items-center gap-1 bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 px-4 py-2 rounded text-sm font-bold shadow-sm transition-colors">
+                          <Icon name="X" className="w-4 h-4 text-red-500" /> 放棄修改
+                        </button>
+                      </React.Fragment>
+                    ) : (
+                      <span className="text-sm font-medium text-slate-500 py-2 px-2 flex items-center gap-1">
+                        <Icon name="Lock" className="w-4 h-4" /> 檢視模式：無法編輯
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex gap-2 min-w-max">
+                    {/* 發明人匯入鈕 */}
+                    {userRole === 'admin' && (
+                        <div className="flex items-center gap-1">
+                          <button 
+                            onClick={() => inventorFileInputRef.current && inventorFileInputRef.current.click()}
+                            className={`flex items-center gap-1 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 text-emerald-700 px-3 py-2 rounded text-sm font-bold transition-colors shadow-sm cursor-pointer mb-0 ${isImporting ? 'opacity-50 pointer-events-none' : ''}`}
+                          >
+                            {isImporting ? <Icon name="Activity" className="w-4 h-4 animate-spin" /> : <Icon name="Upload" className="w-4 h-4 text-emerald-600" />}
+                            匯入發明人 EXCEL
+                          </button>
+                          <input type="file" ref={inventorFileInputRef} accept=".xlsx, .xls, .csv" className="hidden" onChange={handleImportInventorExcel} />
+                        </div>
+                    )}
+                    <button onClick={handleExportInventorExcel} className="flex items-center gap-1 bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 px-3 py-2 rounded text-sm font-bold transition-colors shadow-sm">
+                      <Icon name="Download" className="w-4 h-4 text-emerald-600" /> 匯出清單
+                    </button>
+                    {userRole === 'admin' && (
+                      <button onClick={handleAddInventor} className="flex items-center gap-1 bg-blue-900 hover:bg-blue-950 text-white px-4 py-2 rounded text-sm font-bold shadow-sm transition-colors ml-2">
+                        <Icon name="Plus" className="w-4 h-4" /> 新增發明人
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* 2. 搜尋工具列 */}
+                <div className="p-2 border-b border-slate-200 flex items-center gap-2 bg-white/50 shrink-0 text-slate-600 overflow-x-auto">
+                    <div className="flex items-center bg-slate-100 rounded px-2 py-1 border border-slate-200 w-64 shrink-0">
+                      <Icon name="Search" className="w-4 h-4 text-slate-400 mr-1" />
+                      <input type="text" placeholder="搜尋發明人姓名/證號..." value={searchInventorTerm} onChange={e => setSearchInventorTerm(e.target.value)} className="bg-transparent border-none outline-none text-sm w-full font-medium" />
+                    </div>
+                </div>
+
+                <div className="flex-1 overflow-auto relative excel-grid block">
+                  <table className="w-full text-left border-collapse min-w-max">
+                    <thead className="bg-slate-100/90 sticky top-0 z-20 shadow-sm text-xs text-slate-700 uppercase font-bold tracking-wider whitespace-nowrap">
+                      <tr>
+                        <th className="p-2 border-b border-r border-slate-300 bg-slate-100/90 backdrop-blur sticky left-0 z-30 w-16 text-center">編號</th>
+                        <th className="p-2 border-b border-r border-slate-300 bg-slate-100/90 backdrop-blur min-w-[150px]">姓名</th>
+                        <th className="p-2 border-b border-r border-slate-300 bg-slate-100/90 backdrop-blur min-w-[200px]">英文名字</th>
+                        <th className="p-2 border-b border-r border-slate-300 bg-slate-100/90 backdrop-blur min-w-[180px]">身分證號</th>
+                        <th className="p-2 border-b border-r border-slate-300 bg-slate-100/90 backdrop-blur min-w-[120px]">國籍</th>
+                        {userRole === 'admin' ? <th className="p-2 border-b border-slate-300 w-16 text-center">操作</th> : null}
+                      </tr>
+                    </thead>
+                    <tbody className="text-sm align-top bg-white/50">
+                      {filteredInventors.length === 0 ? (
+                        <tr><td colSpan="6" className="text-center p-8 text-slate-400">目前尚無發明人資料</td></tr>
+                      ) : null}
+                      {filteredInventors.map(inv => {
+                        const invId = inv.firebaseId || inv.id;
+                        return (
+                        <tr key={invId} className={`group border-b border-slate-200 transition-colors ${userRole === 'admin' ? 'hover:bg-blue-50/60' : 'hover:bg-slate-50'}`}>
+                           <td className={`p-2 border-r border-slate-200 text-center font-bold text-slate-600 sticky left-0 z-10 align-middle transition-colors ${userRole === 'admin' ? 'bg-white group-hover:bg-blue-50/60' : 'bg-white group-hover:bg-slate-50'}`}>
+                              {inv.id}
+                           </td>
+                           <td className="p-0 border-r border-slate-200 align-top">
+                              <textarea value={inv.name || ''} onChange={e => handleUpdateInventorField(invId, 'name', e.target.value)} disabled={userRole!=='admin'} className={`w-full h-full p-2 bg-transparent outline-none resizable-cell leading-snug font-bold ${userRole === 'admin' ? 'focus:bg-blue-50 focus:ring-1 ring-blue-500' : 'cursor-default text-slate-700'}`} />
+                           </td>
+                           <td className="p-0 border-r border-slate-200 align-top">
+                              <textarea value={inv.enName || ''} onChange={e => handleUpdateInventorField(invId, 'enName', e.target.value)} disabled={userRole!=='admin'} className={`w-full h-full p-2 bg-transparent outline-none resizable-cell leading-snug ${userRole === 'admin' ? 'focus:bg-blue-50 focus:ring-1 ring-blue-500' : 'cursor-default text-slate-600'}`} />
+                           </td>
+                           <td className="p-0 border-r border-slate-200 align-top">
+                              <textarea value={inv.idNumber || ''} onChange={e => handleUpdateInventorField(invId, 'idNumber', e.target.value)} disabled={userRole!=='admin'} className={`w-full h-full p-2 bg-transparent outline-none resizable-cell font-mono tracking-wider ${userRole === 'admin' ? 'focus:bg-blue-50 focus:ring-1 ring-blue-500' : 'cursor-default text-slate-600'}`} />
+                           </td>
+                           <td className="p-0 border-r border-slate-200 align-top">
+                              <textarea value={inv.nationality || ''} onChange={e => handleUpdateInventorField(invId, 'nationality', e.target.value)} disabled={userRole!=='admin'} className={`w-full h-full p-2 bg-transparent outline-none resizable-cell leading-snug ${userRole === 'admin' ? 'focus:bg-blue-50 focus:ring-1 ring-blue-500' : 'cursor-default text-slate-600'}`} />
+                           </td>
+                           {userRole === 'admin' && (
+                             <td className="p-2 text-center align-middle group-hover:bg-blue-50/60 transition-colors bg-white">
+                               <button onClick={() => handleDeleteInventor(invId)} className="text-slate-300 hover:text-red-600 transition-colors" title="刪除發明人">
+                                 <Icon name="X" className="w-5 h-5 mx-auto" />
+                               </button>
+                             </td>
+                           )}
+                        </tr>
+                      )})}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="p-2 bg-slate-100/90 border-t border-slate-200 text-xs font-medium text-slate-600 flex justify-between rounded-b-xl shrink-0">
+                  <span>顯示： {filteredInventors.length} 位發明人 / 總計： {inventorsData.length} 位</span>
+                  <span className="flex items-center gap-1"><Icon name="Save" className="w-3 h-3 text-emerald-600"/> {userRole === 'admin' ? '自動儲存啟用中' : '唯讀模式'}</span>
+                </div>
+              </div>
+            ) : null}
+
+          </main>
+
+          {/* 彈窗：狀態歷史歷程 (含自訂版次/備註) */}
+          {activePatentForHistory ? (
+            <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
+                <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50 shrink-0">
+                  <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                    <Icon name="Clock" className="w-5 h-5 text-blue-800" /> 
+                    [{activePatentForHistory.id}] {activePatentForHistory.name || '未命名專利'} 
+                  </h3>
+                  <button onClick={() => setActiveHistoryPatentId(null)} className="text-slate-400 hover:text-slate-700 bg-slate-200/50 hover:bg-slate-200 p-1 rounded-full transition-colors">
+                    <Icon name="X" className="w-4 h-4" />
+                  </button>
+                </div>
+                <div className="p-6 overflow-y-auto bg-slate-50/50 flex-1">
+                  
+                  <div className="flex justify-between items-center mb-4">
+                     <h4 className="text-xs font-bold text-slate-400 tracking-widest uppercase flex items-center gap-2">
+                         <span>狀態演進歷程 (支援多版次備註)</span>
+                         {userRole === 'admin' && <span className="text-blue-500 text-[10px]">✏️ 點擊可修改</span>}
+                     </h4>
+                     {userRole === 'admin' && (
+                         <button 
+                           onClick={async () => {
+                               const timestamp = new Date().toLocaleString('zh-TW', { hour12: false });
+                               const currentStatus = activePatentForHistory.status || "未指定狀態";
+                               const newHistory = [...(activePatentForHistory.statusHistory || []), { status: currentStatus, time: timestamp, note: "" }];
+                               await saveData('patent_update', { statusHistory: newHistory }, activeHistoryPatentId);
+                           }}
+                           className="flex items-center gap-1 bg-blue-100 hover:bg-blue-200 text-blue-700 px-3 py-1.5 rounded text-xs font-bold transition-colors shadow-sm"
+                         >
+                           <Icon name="Plus" className="w-3 h-3" /> 新增同狀態歷程
+                         </button>
+                     )}
+                  </div>
+
+                  <div className="space-y-6 relative before:absolute before:inset-0 before:ml-5 before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-gradient-to-b before:from-transparent before:via-blue-200 before:to-transparent">
+                    {(activePatentForHistory.statusHistory || []).map((history, idx) => (
+                      <div key={idx} className="relative flex items-center justify-between md:justify-normal md:odd:flex-row-reverse group is-active">
+                        <div className="flex items-center justify-center w-10 h-10 rounded-full border-4 border-white bg-blue-100 text-blue-800 shadow-sm shrink-0 md:order-1 md:group-odd:-translate-x-1/2 md:group-even:translate-x-1/2 relative z-10">
+                          <Icon name="CheckSquare" className="w-4 h-4" />
+                        </div>
+                        <div className="w-[calc(100%-4rem)] md:w-[calc(50%-2.5rem)] p-4 rounded-xl border border-slate-200 bg-white shadow-sm relative group/item">
+                          
+                          {/* 刪除歷程按鈕 */}
+                          {userRole === 'admin' && (
+                              <button 
+                                  onClick={() => {
+                                      setConfirmDialog({
+                                          msg: '確定要刪除此筆歷程紀錄嗎？',
+                                          onConfirm: () => {
+                                              const newHistory = [...activePatentForHistory.statusHistory];
+                                              newHistory.splice(idx, 1);
+                                              saveData('patent_update', { statusHistory: newHistory }, activeHistoryPatentId);
+                                          }
+                                      });
+                                  }}
+                                  className="absolute top-2 right-2 text-slate-300 hover:text-red-500 opacity-0 group-hover/item:opacity-100 transition-opacity"
+                                  title="刪除此紀錄"
+                              >
+                                  <Icon name="X" className="w-4 h-4" />
+                              </button>
+                          )}
+
+                          <div>
+                              {userRole === 'admin' ? (
+                                  <select 
+                                      value={history.status}
+                                      onChange={(e) => {
+                                          const newHistory = [...activePatentForHistory.statusHistory];
+                                          newHistory[idx].status = e.target.value;
+                                          saveData('patent_update', { statusHistory: newHistory }, activeHistoryPatentId);
+                                      }}
+                                      className="font-bold text-slate-800 text-sm bg-transparent border-b border-dashed border-slate-300 outline-none focus:border-blue-500 cursor-pointer appearance-none pr-4 w-full md:w-auto"
+                                  >
+                                      {(!statuses.includes(history.status) && history.status) ? <option value={history.status}>{history.status}</option> : null}
+                                      {statuses.map(s => <option key={`status_${s}`} value={s}>{s}</option>)}
+                                  </select>
+                              ) : (
+                                  <div className="font-bold text-slate-800 text-sm">{history.status}</div>
+                              )}
+                          </div>
+                          
+                          <div className="mt-2 flex items-center">
+                              <div className="text-xs text-slate-500 font-mono bg-slate-100 inline-flex items-center px-2 py-0.5 rounded border border-transparent hover:border-slate-300 transition-colors">
+                                  {userRole === 'admin' ? (
+                                      <input type="text" defaultValue={history.time}
+                                          onBlur={(e) => {
+                                              if (e.target.value !== history.time) {
+                                                  const newHistory = [...activePatentForHistory.statusHistory];
+                                                  newHistory[idx].time = e.target.value;
+                                                  saveData('patent_update', { statusHistory: newHistory }, activeHistoryPatentId);
+                                              }
+                                          }}
+                                          className="bg-transparent outline-none w-[140px] text-center"
+                                      />
+                                  ) : ( <span>{history.time}</span> )}
+                              </div>
+                          </div>
+                          
+                          {/* 歷程備註 / 版次 */}
+                          <div className="mt-3">
+                              {userRole === 'admin' ? (
+                                  <textarea
+                                      defaultValue={history.note || ''}
+                                      placeholder="📝 點此輸入歷程備註 (例: V1、回覆核駁)..."
+                                      onBlur={(e) => {
+                                          if (e.target.value !== (history.note || '')) {
+                                              const newHistory = [...activePatentForHistory.statusHistory];
+                                              newHistory[idx].note = e.target.value;
+                                              saveData('patent_update', { statusHistory: newHistory }, activeHistoryPatentId);
+                                          }
+                                      }}
+                                      rows="2"
+                                      className="w-full text-xs p-2 bg-yellow-50/50 border border-yellow-200 rounded outline-none focus:ring-1 focus:ring-yellow-400 focus:bg-yellow-50 resize-y"
+                                  />
+                              ) : (
+                                  history.note ? <div className="w-full text-xs p-2 bg-yellow-50 border border-yellow-200 rounded whitespace-pre-wrap">{history.note}</div> : null
+                              )}
+                          </div>
+
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {/* 彈窗：管理員後台設定 */}
+          {adminModalOpen ? (
+            <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl overflow-hidden animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
+                <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-blue-900 text-white shrink-0">
+                  <h3 className="font-bold flex items-center gap-2">
+                    <Icon name="Settings" className="w-5 h-5 text-blue-200" /> 企業後台管理
+                  </h3>
+                  <button onClick={() => setAdminModalOpen(false)} className="text-blue-200 hover:text-white transition-colors">
+                    <Icon name="X" className="w-5 h-5" />
+                  </button>
+                </div>
+                <div className="p-6 space-y-6 overflow-y-auto">
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                      
+                      {/* 1區：企業形象 */}
+                      <div className="col-span-1 md:col-span-3 bg-blue-50/50 border border-blue-100 p-4 rounded-xl grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <div>
+                          <h4 className="font-bold text-sm text-blue-900 mb-3 flex items-center gap-2">
+                            <Icon name="Type" className="w-4 h-4" /> 自訂系統名稱
+                          </h4>
+                          <input type="text" defaultValue={systemName} onChange={(e) => window._tempSystemName = e.target.value} className="w-full p-2 rounded border border-blue-200 text-sm font-bold focus:ring-1 focus:ring-blue-500 outline-none" />
+                        </div>
+                        <div>
+                          <h4 className="font-bold text-sm text-blue-900 mb-3 flex items-center gap-2">
+                            <Icon name="Image" className="w-4 h-4" /> 企業 Logo 上傳 (建議透明底)
+                          </h4>
+                          <input type="file" accept="image/*" onChange={(e) => handleImageUpload(e, true)} className="text-xs w-full mb-2" />
+                          <div className="h-10 bg-white border border-slate-200 rounded flex items-center justify-center overflow-hidden p-1 relative">
+                             {logoUrl ? <img id="logo-preview" src={logoUrl} className="h-full object-contain" /> : <img id="logo-preview" className="h-full object-contain hidden" />}
+                             {(window._tempLogo || logoUrl) && <button onClick={() => { window._tempLogo = ""; setLogoUrl(""); }} className="absolute right-1 text-red-500 hover:text-red-700"><Icon name="X" className="w-4 h-4"/></button>}
+                          </div>
+                        </div>
+                        <div>
+                          <h4 className="font-bold text-sm text-blue-900 mb-3 flex items-center gap-2">
+                            <Icon name="Wallpaper" className="w-4 h-4" /> 系統背景圖上傳
+                          </h4>
+                          <input type="file" accept="image/*" onChange={(e) => handleImageUpload(e, false)} className="text-xs w-full mb-2" />
+                          <div className="h-10 bg-slate-100 border border-slate-200 rounded flex items-center justify-center overflow-hidden relative">
+                             {bgUrl ? <img id="bg-preview" src={bgUrl} className="w-full object-cover opacity-50" /> : <img id="bg-preview" className="w-full object-cover hidden opacity-50" />}
+                             {(window._tempBg || bgUrl) && <button onClick={() => { window._tempBg = ""; setBgUrl(""); }} className="absolute right-1 text-red-500 hover:text-red-700 bg-white/80 rounded-full"><Icon name="X" className="w-4 h-4"/></button>}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* 2區：圖表顏色設定與顯示 */}
+                      <div>
+                        <h4 className="font-bold text-sm text-slate-800 mb-3 flex items-center gap-2">
+                          <Icon name="BarChart" className="w-4 h-4 text-purple-600" /> 儀表板視覺與圖表設定
+                        </h4>
+                        <div className="bg-slate-50 p-2 rounded-xl border border-slate-200 shadow-inner overflow-hidden">
+                            <div className="flex items-center justify-between py-2 border-b border-slate-200">
+                                <label className="flex items-center gap-2 cursor-pointer">
+                                    <input type="checkbox" checked={tempVisibleBlocks.includes('dept')} onChange={() => {
+                                        setTempVisibleBlocks(prev => prev.includes('dept') ? prev.filter(b => b !== 'dept') : [...prev, 'dept']);
+                                    }} className="w-4 h-4 accent-blue-600" />
+                                    <span className="text-sm font-bold text-slate-700">1. 部門申請量</span>
+                                </label>
+                                <div className="flex items-center gap-1">
+                                    <input type="color" value={tempChartColors.dept || '#2563eb'} onChange={e => setTempChartColors({...tempChartColors, dept: e.target.value})} className="w-6 h-6 p-0 border-0 rounded cursor-pointer" />
+                                    <select value={tempChartTypes.dept || 'bar'} onChange={e => setTempChartTypes({...tempChartTypes, dept: e.target.value})} className="border border-slate-300 rounded p-1 text-xs">
+                                        <option value="bar">直條圖</option>
+                                        <option value="horizontalBar">橫條圖</option>
+                                        <option value="pie">圓餅圖</option>
+                                        <option value="donut">環圈圖</option>
+                                        <option value="line">折線圖</option>
+                                        <option value="area">面積圖</option>
+                                    </select>
+                                </div>
+                            </div>
+                            
+                            <div className="flex items-center justify-between py-2 border-b border-slate-200">
+                                <label className="flex items-center gap-2 cursor-pointer">
+                                    <input type="checkbox" checked={tempVisibleBlocks.includes('status')} onChange={() => {
+                                        setTempVisibleBlocks(prev => prev.includes('status') ? prev.filter(b => b !== 'status') : [...prev, 'status']);
+                                    }} className="w-4 h-4 accent-blue-600" />
+                                    <span className="text-sm font-bold text-slate-700">2. 狀態進度分布</span>
+                                </label>
+                                <div className="flex items-center gap-1">
+                                    <input type="color" value={tempChartColors.status || '#059669'} onChange={e => setTempChartColors({...tempChartColors, status: e.target.value})} className="w-6 h-6 p-0 border-0 rounded cursor-pointer" />
+                                    <select value={tempChartTypes.status || 'horizontalBar'} onChange={e => setTempChartTypes({...tempChartTypes, status: e.target.value})} className="border border-slate-300 rounded p-1 text-xs">
+                                        <option value="bar">直條圖</option>
+                                        <option value="horizontalBar">橫條圖</option>
+                                        <option value="pie">圓餅圖</option>
+                                        <option value="donut">環圈圖</option>
+                                        <option value="line">折線圖</option>
+                                        <option value="area">面積圖</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div className="flex items-center justify-between py-2 border-b border-slate-200">
+                                <label className="flex items-center gap-2 cursor-pointer">
+                                    <input type="checkbox" checked={tempVisibleBlocks.includes('agency')} onChange={() => {
+                                        setTempVisibleBlocks(prev => prev.includes('agency') ? prev.filter(b => b !== 'agency') : [...prev, 'agency']);
+                                    }} className="w-4 h-4 accent-blue-600" />
+                                    <span className="text-sm font-bold text-slate-700">3. 事務所接案量</span>
+                                </label>
+                                <div className="flex items-center gap-1">
+                                    <input type="color" value={tempChartColors.agency || '#4f46e5'} onChange={e => setTempChartColors({...tempChartColors, agency: e.target.value})} className="w-6 h-6 p-0 border-0 rounded cursor-pointer" />
+                                    <select value={tempChartTypes.agency || 'pie'} onChange={e => setTempChartTypes({...tempChartTypes, agency: e.target.value})} className="border border-slate-300 rounded p-1 text-xs">
+                                        <option value="bar">直條圖</option>
+                                        <option value="horizontalBar">橫條圖</option>
+                                        <option value="pie">圓餅圖</option>
+                                        <option value="donut">環圈圖</option>
+                                        <option value="line">折線圖</option>
+                                        <option value="area">面積圖</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div className="flex flex-col py-2">
+                                <div className="flex items-center justify-between mb-2">
+                                    <label className="flex items-center gap-2 cursor-pointer">
+                                        <input type="checkbox" checked={tempVisibleBlocks.includes('acquired')} onChange={() => {
+                                            setTempVisibleBlocks(prev => prev.includes('acquired') ? prev.filter(b => b !== 'acquired') : [...prev, 'acquired']);
+                                        }} className="w-4 h-4 accent-blue-600" />
+                                        <span className="text-sm font-bold text-slate-700">4. 已取得專利 (多維度)</span>
+                                    </label>
+                                    <select value={tempChartTypes.acquired || 'bar'} onChange={e => setTempChartTypes({...tempChartTypes, acquired: e.target.value})} className="border border-slate-300 rounded p-1 text-xs">
+                                        <option value="bar">直條圖</option>
+                                        <option value="horizontalBar">橫條圖</option>
+                                        <option value="line">折線圖</option>
+                                        <option value="area">面積圖</option>
+                                    </select>
+                                </div>
+                                <div className="flex items-center justify-between pl-6 mt-1">
+                                    <label className="flex items-center gap-1 text-xs text-slate-600">
+                                        總和 <input type="color" value={tempChartColors.acquiredTotal || '#3b82f6'} onChange={e => setTempChartColors({...tempChartColors, acquiredTotal: e.target.value})} className="w-5 h-5 p-0 border-0 rounded cursor-pointer" />
+                                    </label>
+                                    <label className="flex items-center gap-1 text-xs text-slate-600">
+                                        發明 <input type="color" value={tempChartColors.acquiredInvention || '#e11d48'} onChange={e => setTempChartColors({...tempChartColors, acquiredInvention: e.target.value})} className="w-5 h-5 p-0 border-0 rounded cursor-pointer" />
+                                    </label>
+                                    <label className="flex items-center gap-1 text-xs text-slate-600">
+                                        新型 <input type="color" value={tempChartColors.acquiredUtility || '#d97706'} onChange={e => setTempChartColors({...tempChartColors, acquiredUtility: e.target.value})} className="w-5 h-5 p-0 border-0 rounded cursor-pointer" />
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                      </div>
+
+                      {/* 3區：狀態維護 */}
+                      <div>
+                        <h4 className="font-bold text-sm text-slate-800 mb-3 flex items-center gap-2">
+                          <Icon name="Activity" className="w-4 h-4 text-blue-600" /> 全域狀態選項維護 (預設9種)
+                        </h4>
+                        <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 text-sm font-mono text-slate-700 mb-2 shadow-inner">
+                          <textarea 
+                            className="w-full bg-transparent outline-none resize-y min-h-[160px] leading-relaxed"
+                            defaultValue={statuses.join('\n')}
+                            onChange={(e) => window._tempStatuses = e.target.value.split('\n').filter(s => s.trim() !== '')}
+                            placeholder="每行輸入一個狀態名稱..."
+                          />
+                        </div>
+                      </div>
+
+                      {/* 4區：事務所與國家選單維護 */}
+                      <div className="space-y-4">
+                        <div>
+                          <h4 className="font-bold text-sm text-slate-800 mb-3 flex items-center gap-2">
+                            <Icon name="Building2" className="w-4 h-4 text-indigo-600" /> 專利事務所下拉清單
+                          </h4>
+                          <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 text-sm font-mono text-slate-700 mb-2 shadow-inner">
+                            <textarea 
+                              className="w-full bg-transparent outline-none resize-y min-h-[60px] leading-relaxed"
+                              defaultValue={agenciesList.join('\n')}
+                              onChange={(e) => window._tempAgencies = e.target.value.split('\n').filter(s => s.trim() !== '')}
+                              placeholder="每行輸入一間事務所..."
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <h4 className="font-bold text-sm text-slate-800 mb-3 flex items-center gap-2">
+                            <Icon name="MapPin" className="w-4 h-4 text-rose-600" /> 申請國家下拉清單
+                          </h4>
+                          <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 text-sm font-mono text-slate-700 mb-2 shadow-inner">
+                            <textarea 
+                              className="w-full bg-transparent outline-none resize-y min-h-[60px] leading-relaxed"
+                              defaultValue={regionsList.join('\n')}
+                              onChange={(e) => window._tempRegions = e.target.value.split('\n').filter(s => s.trim() !== '')}
+                              placeholder="每行輸入一個國家..."
+                            />
+                          </div>
+                        </div>
+                      </div>
+                  </div>
+                  
+                  <button 
+                    onClick={() => handleSaveSettings(
+                        window._tempStatuses || statuses,
+                        window._tempAgencies || agenciesList,
+                        window._tempRegions || regionsList,
+                        window._tempSystemName !== undefined ? window._tempSystemName : systemName,
+                        window._tempLogo !== undefined ? window._tempLogo : logoUrl,
+                        window._tempBg !== undefined ? window._tempBg : bgUrl
+                    )}
+                    className="w-full bg-blue-900 hover:bg-blue-950 text-white py-3 rounded-xl font-bold text-base transition-colors shadow-md"
+                  >
+                    套用並儲存所有設定
+                  </button>
+
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {/* 彈窗：管理員登入 */}
+          {showAdminLogin ? (
+            <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden animate-in zoom-in-95 duration-200 border border-slate-200">
+                <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                  <h3 className="font-bold flex items-center gap-2 text-slate-800">
+                    <Icon name="Lock" className="w-5 h-5 text-blue-600" /> 管理員身分驗證
+                  </h3>
+                  <button onClick={() => setShowAdminLogin(false)} className="text-slate-400 hover:text-slate-700 transition-colors">
+                    <Icon name="X" className="w-5 h-5" />
+                  </button>
+                </div>
+                <div className="p-6">
+                  <form onSubmit={handleAdminLogin} className="space-y-4">
+                    <div>
+                      <input type="password" value={loginInput} onChange={(e) => setLoginInput(e.target.value)} placeholder="請輸入管理員密碼" autoFocus className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all text-sm font-bold text-center tracking-widest" />
+                      {loginError ? <p className="text-red-500 text-xs mt-2 font-medium flex items-center justify-center gap-1"><Icon name="AlertCircle" className="w-3 h-3"/> {loginError}</p> : null}
+                    </div>
+                    <button type="submit" className="w-full bg-blue-900 hover:bg-blue-950 text-white font-bold py-3 rounded-xl shadow-md transition-colors">確認解鎖</button>
+                  </form>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
