@@ -94,8 +94,14 @@
     // ==========================================
     // 1. Firebase 智慧初始化 (無金鑰自動降級本機模式)
     // ==========================================
-    const defaultFirebaseConfig = {}; // 預設空設定
-    const finalFirebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : defaultFirebaseConfig;
+    // ==========================================
+    // 1. Firebase 智慧初始化 
+    // ==========================================
+    const finalFirebaseConfig = {
+      apiKey: "您的真實金鑰...",
+      authDomain: "您的專案.firebaseapp.com",
+      // ...其他金鑰內容
+    };
     
     let app, auth, db;
     let useLocalFallback = false;
