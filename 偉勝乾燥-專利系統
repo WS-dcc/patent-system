@@ -22,7 +22,7 @@
   <script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
   <script src="https://unpkg.com/recharts@2.1.12/umd/Recharts.js"></script>
 
-  <!-- 引入 SheetJS -->
+  <!-- 引入 SheetJS (用於完美解析與匯出 Excel xlsx 檔案) -->
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 
   <style>
@@ -53,6 +53,7 @@
       .resizable-cell { resize: none; border: 1px solid #e2e8f0; white-space: normal !important; }
     }
     
+    /* Toast 動畫 */
     @keyframes slideInUp {
       from { transform: translateY(100%); opacity: 0; }
       to { transform: translateY(0); opacity: 1; }
@@ -91,24 +92,27 @@
     };
 
     // ==========================================
-    // 1. Firebase 初始化
+    // 1. Firebase 智慧初始化 (無金鑰自動降級本機模式)
     // ==========================================
-    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+    const defaultFirebaseConfig = {}; // 預設空設定
+    const finalFirebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : defaultFirebaseConfig;
+    
     let app, auth, db;
     let useLocalFallback = false;
-    const appId = typeof __app_id !== 'undefined' ? __app_id : 'patent-system-local';
-
+    
     try {
-        if(Object.keys(firebaseConfig).length > 0) {
-            app = initializeApp(firebaseConfig);
+        if (Object.keys(finalFirebaseConfig).length > 0) {
+            app = initializeApp(finalFirebaseConfig);
             auth = getAuth(app);
             db = getFirestore(app);
         } else {
-             useLocalFallback = true;
+            useLocalFallback = true;
         }
     } catch (e) {
         useLocalFallback = true;
     }
+    
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'weisheng-patent-system'; 
 
     // ==========================================
     // 全域設定與預設值
@@ -269,7 +273,7 @@
                     <Icon name={iconName} className="w-5 h-5 text-slate-600" />
                     <h3 className="font-bold text-slate-800 select-none flex-1 flex items-center justify-between">
                         {title}
-                        {total > 0 && <span className="text-blue-700 bg-blue-50 px-2 py-0.5 rounded text-xs">總計: {Number(total.toFixed(2))} 件</span>}
+                        {total > 0 && <span className="text-blue-700 bg-blue-50 px-2 py-0.5 rounded text-xs border border-blue-200 shadow-sm">總計: {Number(total.toFixed(2))} 件</span>}
                     </h3>
                 </div>
                 {chartData.length === 0 ? <p className="text-slate-400 text-sm text-center py-4 select-none flex-1">暫無數據</p> : (
@@ -305,7 +309,7 @@
                   ))}
                 </tbody>
                 {entries.length > 0 && (
-                  <tfoot className="bg-slate-50 font-bold border-t-2 border-slate-200 sticky bottom-0 z-10 shadow-[0_-2px_10px_rgba(0,0,0,0.05)]">
+                  <tfoot className="bg-blue-50 font-bold border-t-2 border-blue-200 sticky bottom-0 z-10 shadow-[0_-2px_10px_rgba(0,0,0,0.05)]">
                     <tr>
                       <td className="px-4 py-3 text-sm text-blue-900">總計</td>
                       <td className="px-4 py-3 text-sm text-blue-900 text-right">{Number(total.toFixed(2))}</td>
@@ -392,7 +396,7 @@
                     <Icon name={iconName} className="w-5 h-5 text-slate-600" />
                     <h3 className="font-bold text-slate-800 select-none flex-1 flex items-center justify-between">
                         {title}
-                        {totalItem && totalItem.total > 0 && <span className="text-blue-700 bg-blue-50 px-2 py-0.5 rounded text-xs">總取得: {Number(totalItem.total.toFixed(2))} 件</span>}
+                        {totalItem && totalItem.total > 0 && <span className="text-blue-700 bg-blue-50 px-2 py-0.5 rounded text-xs border border-blue-200 shadow-sm">總取得: {Number(totalItem.total.toFixed(2))} 件</span>}
                     </h3>
                 </div>
                 {chartData.length === 0 ? <p className="text-slate-400 text-sm text-center py-4 select-none flex-1">暫無數據</p> : (
@@ -432,7 +436,7 @@
                   ))}
                 </tbody>
                 {totalItem && totalItem.total > 0 && (
-                  <tfoot className="bg-slate-50 font-bold border-t-2 border-slate-200 sticky bottom-0 z-10 shadow-[0_-2px_10px_rgba(0,0,0,0.05)]">
+                  <tfoot className="bg-blue-50 font-bold border-t-2 border-blue-200 sticky bottom-0 z-10 shadow-[0_-2px_10px_rgba(0,0,0,0.05)]">
                      <tr>
                        <td className="px-4 py-3 text-sm text-blue-900 font-extrabold">【全公司總計】</td>
                        <td className="px-4 py-3 text-sm text-blue-900 text-right font-extrabold">{Number(totalItem.total.toFixed(2))}</td>
@@ -445,6 +449,11 @@
           </div>
         </div>
       );
+    };
+
+    const autoResizeTextarea = (e) => {
+        e.target.style.height = 'auto';
+        e.target.style.height = e.target.scrollHeight + 'px';
     };
 
     // ==========================================
@@ -582,22 +591,23 @@
       useEffect(() => {
         if (!user || useLocalFallback) return;
 
-        const patentsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'patents');
+        // 全改為讀取 public 共享層級，讓全公司看到同一份資料庫
+        const patentsRef = collection(db, 'artifacts', appId, 'public', 'data', 'patents');
         const unsubPatents = onSnapshot(patentsRef, (snapshot) => {
           const data = snapshot.docs.map(doc => ({ firebaseId: doc.id, ...doc.data() }));
           data.sort((a, b) => b.id - a.id); 
           setPatents(data);
           setLoading(false);
-        });
+        }, (error) => console.error(error));
 
-        const inventorsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'inventors');
+        const inventorsRef = collection(db, 'artifacts', appId, 'public', 'data', 'inventors');
         const unsubInventors = onSnapshot(inventorsRef, (snapshot) => {
           const data = snapshot.docs.map(doc => ({ firebaseId: doc.id, ...doc.data() }));
           data.sort((a, b) => a.id - b.id); 
           setInventorsData(data);
         });
 
-        const settingsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'settings');
+        const settingsRef = collection(db, 'artifacts', appId, 'public', 'data', 'settings');
         const unsubSettings = onSnapshot(settingsRef, (snapshot) => {
           const statusDoc = snapshot.docs.find(d => d.id === 'status_list');
           if (statusDoc && statusDoc.data().list) setStatuses(statusDoc.data().list);
@@ -706,33 +716,33 @@
 
           try {
              if (type === 'patent_add') {
-                 const docRef = doc(collection(db, 'artifacts', appId, 'users', user.uid, 'patents'));
+                 const docRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'patents'));
                  await setDoc(docRef, dataToSave);
              } else if (type === 'patent_update') {
-                 const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'patents', id);
+                 const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'patents', id);
                  await setDoc(docRef, dataToSave, { merge: true });
              } else if (type === 'patent_delete') {
-                 await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'patents', id));
+                 await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'patents', id));
              } else if (type === 'inventor_add') {
-                 const docRef = doc(collection(db, 'artifacts', appId, 'users', user.uid, 'inventors'));
+                 const docRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'inventors'));
                  await setDoc(docRef, dataToSave);
              } else if (type === 'inventor_update') {
-                 const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'inventors', id);
+                 const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'inventors', id);
                  await setDoc(docRef, dataToSave, { merge: true });
              } else if (type === 'inventor_delete') {
-                 await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'inventors', id));
+                 await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'inventors', id));
              } else if (type === 'statuses') {
-                 const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'status_list');
+                 const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'status_list');
                  await setDoc(docRef, { list: dataToSave });
              } else if (type === 'ui_prefs') {
-                 const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'ui_prefs');
+                 const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'ui_prefs');
                  await setDoc(docRef, dataToSave, { merge: true });
              } else if (type === 'patent_import') {
                  const promises = dataToSave.map(item => {
                      const fbId = item.firebaseId;
                      const itemData = { ...item };
                      delete itemData.firebaseId; 
-                     const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'patents', String(fbId));
+                     const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'patents', String(fbId));
                      return setDoc(docRef, itemData, { merge: true });
                  });
                  await Promise.all(promises);
@@ -741,7 +751,7 @@
                      const fbId = item.firebaseId;
                      const itemData = { ...item };
                      delete itemData.firebaseId; 
-                     const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'inventors', String(fbId));
+                     const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'inventors', String(fbId));
                      return setDoc(docRef, itemData, { merge: true });
                  });
                  await Promise.all(promises);
@@ -770,7 +780,6 @@
         
         const newPatent = {
           id: currentMaxId + 1,
-          ...(useLocalFallback ? { firebaseId: `local_${Date.now()}` } : {}), 
           agency: '', department: '', inventors: '', region: '',
           isUtility: false, isInvention: false, name: '', isCore: false, isBonus: false, notes: '',
           applyDate: '', status: "", statusHistory: [], certDate: '', certNum: '', duration: '',
@@ -787,7 +796,6 @@
         const currentMaxId = inventorsData.length > 0 ? Math.max(...inventorsData.map(p => p.id)) : 0;
         const newInv = {
           id: currentMaxId + 1,
-          ...(useLocalFallback ? { firebaseId: `local_inv_${Date.now()}` } : {}), 
           name: '', enName: '', idNumber: '', nationality: '台灣',
           createdAt: new Date().toISOString()
         };
@@ -1040,7 +1048,7 @@
                             } else {
                                 currentMaxId = Math.max(currentMaxId, rowId);
                             }
-                            fbId = useLocalFallback ? `import_local_${rowId}_${Date.now()}` : `patent_${rowId}_${Date.now()}`;
+                            fbId = `patent_${rowId}_${Date.now()}`;
                         }
 
                         const statusVal = getVal(['目前狀態', '狀態']);
@@ -1055,8 +1063,8 @@
                           id: rowId,
                           firebaseId: fbId,
                           agency: agencyStr, department: getVal(['部門', '單位']), inventors: getVal(['發明人']), region: getVal(['國家', '國別', '地區']),
-                          isUtility: getBool(['新型']), isInvention: getBool(['發明']), name: nameStr, isCore: getBool(['核心技術', '核心']),
-                          isBonus: getBool(['申請獎金', '獎金']), notes: getVal(['備註']), applyDate: getVal(['申請日期', '申請日', '送件', '智財局日期']),
+                          isUtility: getBool(['新型', '新型專利']), isInvention: getBool(['發明', '發明專利']), name: nameStr, isCore: getBool(['核心技術', '核心']),
+                          isBonus: getBool(['申請獎金', '獎金', '已申請獎金']), notes: getVal(['備註']), applyDate: getVal(['申請日期', '申請日', '送件', '智財局日期']),
                           status: finalStatus, certDate: getVal(['證書日期', '證書日', '公告日期']), certNum: getVal(['專利證書號', '證書號', '公開號', '公告號']), duration: getVal(['專利權期間', '專利期間', '期間']),
                           statusHistory: finalStatusHistory,
                           createdAt: existingPatent?.createdAt || new Date().toISOString()
@@ -1168,7 +1176,7 @@
                             } else {
                                 currentMaxId = Math.max(currentMaxId, rowId);
                             }
-                            fbId = useLocalFallback ? `import_local_inv_${rowId}_${Date.now()}` : `inventor_${rowId}_${Date.now()}`;
+                            fbId = `inventor_${rowId}_${Date.now()}`;
                         }
 
                         itemsToSave.push({
@@ -1243,7 +1251,7 @@
         const agencyCounts = {};
         const acquiredCounts = { '總公司總計': { total: 0, invention: 0, utility: 0 } };
         const regionTypeCounts = {};
-        const indicatorCounts = { '核心技術': 0, '申請獎金': 0 };
+        const indicatorCounts = { '專利核心技術': 0, '已申請獎金': 0 };
 
         filteredPatents.forEach(p => {
           const isAcquired = p.status && String(p.status).includes('已取得');
@@ -1290,18 +1298,18 @@
           }
 
           // 核心與獎金指標
-          if (p.isCore) indicatorCounts['核心技術'] += 1;
-          if (p.isBonus) indicatorCounts['申請獎金'] += 1;
+          if (p.isCore) indicatorCounts['專利核心技術'] += 1;
+          if (p.isBonus) indicatorCounts['已申請獎金'] += 1;
         });
 
         // 過濾掉為0的指標
-        if(indicatorCounts['核心技術'] === 0) delete indicatorCounts['核心技術'];
-        if(indicatorCounts['申請獎金'] === 0) delete indicatorCounts['申請獎金'];
+        if(indicatorCounts['專利核心技術'] === 0) delete indicatorCounts['專利核心技術'];
+        if(indicatorCounts['已申請獎金'] === 0) delete indicatorCounts['已申請獎金'];
 
         return { deptCounts, statusCounts, agencyCounts, acquiredCounts, regionTypeCounts, indicatorCounts };
       }, [filteredPatents]);
 
-      if (loading) return <div className="min-h-screen flex items-center justify-center bg-slate-50 text-slate-500 font-medium">系統核心載入中，請稍候...</div>;
+      if (loading) return <div className="min-h-screen flex items-center justify-center bg-slate-50 text-slate-500 font-medium">系統連線與資料載入中，請稍候...</div>;
 
       const renderDashboardBlock = (blockId) => {
          if (!visibleBlocks.includes(blockId)) return null;
@@ -1430,6 +1438,7 @@
                 </div>
                 {dashboardOrder.map(blockId => renderDashboardBlock(blockId))}
                 
+                {/* 顯示被隱藏的圖表 */}
                 {userRole === 'admin' && DEFAULT_VISIBLE_BLOCKS.filter(b => !visibleBlocks.includes(b)).length > 0 && (
                    <div className="flex justify-center mt-8">
                        <button onClick={() => setAdminModalOpen(true)} className="flex items-center gap-2 px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold text-sm rounded-full transition-colors">
@@ -1450,7 +1459,7 @@
                   <div className="flex gap-2 min-w-max">
                     {userRole === 'admin' ? (
                       <React.Fragment>
-                        <button onClick={() => showToast('系統已啟用自動即時儲存功能，變更已在背景存檔！')} className="flex items-center gap-1 bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 px-4 py-2 rounded text-sm font-bold shadow-sm transition-colors">
+                        <button onClick={() => showToast('變更已在背景即時存檔！')} className="flex items-center gap-1 bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 px-4 py-2 rounded text-sm font-bold shadow-sm transition-colors">
                           <Icon name="Save" className="w-4 h-4 text-emerald-600" /> 儲存修改
                         </button>
                         <button onClick={() => { setConfirmDialog({ msg: '確定要放棄修改並重新載入嗎？', onConfirm: () => window.location.reload() }); }} className="flex items-center gap-1 bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 px-4 py-2 rounded text-sm font-bold shadow-sm transition-colors">
@@ -1464,6 +1473,7 @@
                     )}
                   </div>
                   <div className="flex gap-2 min-w-max">
+                    {/* 匯入鈕 */}
                     {userRole === 'admin' && (
                         <div className="flex items-center gap-1">
                           <button 
@@ -1740,7 +1750,7 @@
                 </div>
                 <div className="p-2 bg-slate-100/90 border-t border-slate-200 text-xs font-medium text-slate-600 flex justify-between rounded-b-xl shrink-0 print-hide">
                   <span>篩選顯示： {filteredPatents.length} 筆案件 / 總計： {patents.length} 筆</span>
-                  <span className="flex items-center gap-1"><Icon name="Save" className="w-3 h-3 text-emerald-600"/> {userRole === 'admin' ? (useLocalFallback ? '本機暫存模式' : '自動儲存啟用中') : '唯讀模式'}</span>
+                  <span className="flex items-center gap-1"><Icon name="Save" className="w-3 h-3 text-emerald-600"/> {userRole === 'admin' ? '自動儲存啟用中' : '唯讀模式'}</span>
                 </div>
               </div>
             ) : null}
@@ -1848,7 +1858,7 @@
                     </tbody>
                   </table>
                 </div>
-                <div className="p-2 bg-slate-100/90 border-t border-slate-200 text-xs font-medium text-slate-600 flex justify-between rounded-b-xl shrink-0">
+                <div className="p-2 bg-slate-100/90 border-t border-slate-200 text-xs font-medium text-slate-600 flex justify-between rounded-b-xl">
                   <span>顯示： {filteredInventors.length} 位發明人 / 總計： {inventorsData.length} 位</span>
                   <span className="flex items-center gap-1"><Icon name="Save" className="w-3 h-3 text-emerald-600"/> {userRole === 'admin' ? '自動儲存啟用中' : '唯讀模式'}</span>
                 </div>
